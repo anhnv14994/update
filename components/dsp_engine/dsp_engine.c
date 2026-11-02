@@ -2063,8 +2063,8 @@ const uint8_t *dsp_engine_process(
         (int16_t *)s_scratch;
 
 
-    const float character_control_smooth = 1.0f - expf(
-        -1.0f / (0.012f * DSP_SAMPLE_RATE_HZ));
+    /* 12 ms control smoothing precomputed at 44.1 kHz; avoid expf per block. */
+    const float character_control_smooth = 0.00188786049f;
 
     /* Per-call profiling: cycle-counter reads are much lighter than timers. */
     uint32_t character_stage_cycles[CHARACTER_STAGE_COUNT] = {0};
