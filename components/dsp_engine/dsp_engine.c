@@ -2956,7 +2956,8 @@ const uint8_t *dsp_engine_process(
                  * same sag coefficient so the phantom centre cannot wander. */
                 float supply_level = 0.0f;
                 float supply_sag = 0.0f;
-                const bool memory_active = cs->memory > 0.00002f;
+                const bool memory_active =
+                    any_stage_active && cs->memory > 0.00002f;
                 if (memory_active) {
                     const float program_level = 0.5f * (fabsf(yl) + fabsf(yr));
                     const float supply_alpha =
@@ -3470,6 +3471,8 @@ const uint8_t *dsp_engine_process(
 
     const uint32_t now_ms =
         (uint32_t)(esp_timer_get_time() / 1000ULL);
+    if (s_character_diag_last_log_ms == 0)
+        s_character_diag_last_log_ms = now_ms;
     if (now_ms - s_character_diag_last_log_ms >= 5000U) {
         const uint32_t count = atomic_exchange_explicit(
             &s_character_diag_frames, 0, memory_order_relaxed);
@@ -3507,7 +3510,7 @@ const uint8_t *dsp_engine_process(
             ESP_LOGI(TAG,
                 "DSP diag %u frames: PEQ=%u/%u Exciter=%u/%u "
                 "Character=%u S1=%u/%u S2=%u/%u S3=%u/%u "
-                "Master=%u/%u us (avg/max per frame)",
+                "Master=%u/%u us (avg/max per PCM block)",
                 count,
                 block_avg_us[0], block_max_us[0],
                 block_avg_us[1], block_max_us[1],
@@ -3521,26 +3524,6 @@ const uint8_t *dsp_engine_process(
                 block_avg_us[2], block_max_us[2]);
         }
         s_character_diag_last_log_ms = now_ms;
-    }
-
-    static const char *block_names[3] = {"PEQ", "Exciter", "Master"};
-    for (unsigned block = 0; block < 3; ++block) {
-        atomic_fetch_add_explicit(
-            &s_dsp_diag_block_cycles[block],
-            dsp_block_cycles[block],
-            memory_order_relaxed);
-
-        uint32_t prev_max = atomic_load_explicit(
-            &s_dsp_diag_block_max_cycles[block],
-            memory_order_relaxed);
-        while (dsp_block_cycles[block] > prev_max &&
-               !atomic_compare_exchange_weak_explicit(
-                   &s_dsp_diag_block_max_cycles[block],
-                   &prev_max,
-                   dsp_block_cycles[block],
-                   memory_order_relaxed,
-                   memory_order_relaxed)) {
-        }
     }
 
     (void)diag_frames;
