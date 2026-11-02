@@ -2275,12 +2275,6 @@ const uint8_t *dsp_engine_process(
     const bool interaction_for_stage2 =
         (active_stage_mask & DSP_CHARACTER_STAGE_1) != 0 &&
         max_interaction_scale > 0.00000025f;
-    const bool h2_only_block =
-        !dynamic_active &&
-        !interaction_for_stage2 &&
-        gain_start.h3_gain[1] == 0.0f &&
-        gain_end.h3_gain[1] == 0.0f;
-
     const uint8_t stages_just_disabled =
         s_character_active_stage_mask & (uint8_t)(~active_stage_mask);
 
@@ -2455,7 +2449,7 @@ const uint8_t *dsp_engine_process(
                                 0.5f * (even_gain + ss->prev_even_gain[ch]);
                             const float aa_odd_gain =
                                 0.5f * (odd_gain + ss->prev_odd_gain[ch]);
-                            if (h2_only_block && aa_odd_gain == 0.0f) {
+                            if (stage == 0 || aa_odd_gain == 0.0f) {
                                 residual = character_adaa_even_residual(
                                     band, band_power, ss->prev_x[ch],
                                     ss->prev_band_power[ch],
