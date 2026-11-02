@@ -782,6 +782,95 @@ static void set_character_factory(void)
     s_character.mode = DSP_CHARACTER_CUSTOM;
 }
 
+static const char *character_switch_text(bool enabled)
+{
+    return enabled ? "ON" : "OFF";
+}
+
+/* Log only control transitions; never called from the real-time audio path. */
+static void log_character_switch_changes(
+    const char *source,
+    bool old_dsp_enabled,
+    const dsp_character_t *old_cfg,
+    bool new_dsp_enabled,
+    const dsp_character_t *new_cfg)
+{
+    const bool old_character_effective =
+        old_dsp_enabled && old_cfg->enabled;
+    const bool new_character_effective =
+        new_dsp_enabled && new_cfg->enabled;
+
+    if (old_cfg->enabled != new_cfg->enabled ||
+        old_character_effective != new_character_effective) {
+        ESP_LOGI(TAG,
+                 "[%s] Analog Character: requested %s -> %s, effective %s -> %s",
+                 source,
+                 character_switch_text(old_cfg->enabled),
+                 character_switch_text(new_cfg->enabled),
+                 character_switch_text(old_character_effective),
+                 character_switch_text(new_character_effective));
+    }
+
+    const bool old_interaction_effective =
+        old_character_effective && old_cfg->harmonic_interaction_enabled;
+    const bool new_interaction_effective =
+        new_character_effective && new_cfg->harmonic_interaction_enabled;
+
+    if (old_cfg->harmonic_interaction_enabled !=
+            new_cfg->harmonic_interaction_enabled ||
+        old_interaction_effective != new_interaction_effective) {
+        ESP_LOGI(TAG,
+                 "[%s] Harmonic Interaction: requested %s -> %s, effective %s -> %s, amount=%.0f%%",
+                 source,
+                 character_switch_text(old_cfg->harmonic_interaction_enabled),
+                 character_switch_text(new_cfg->harmonic_interaction_enabled),
+                 character_switch_text(old_interaction_effective),
+                 character_switch_text(new_interaction_effective),
+                 new_cfg->harmonic_interaction_pct);
+    }
+
+    const bool old_dynamic_effective =
+        old_character_effective && old_cfg->dynamic_saturation_enabled;
+    const bool new_dynamic_effective =
+        new_character_effective && new_cfg->dynamic_saturation_enabled;
+
+    if (old_cfg->dynamic_saturation_enabled !=
+            new_cfg->dynamic_saturation_enabled ||
+        old_dynamic_effective != new_dynamic_effective) {
+        ESP_LOGI(TAG,
+                 "[%s] Dynamic Saturation: requested %s -> %s, effective %s -> %s, amount=%.0f%%",
+                 source,
+                 character_switch_text(old_cfg->dynamic_saturation_enabled),
+                 character_switch_text(new_cfg->dynamic_saturation_enabled),
+                 character_switch_text(old_dynamic_effective),
+                 character_switch_text(new_dynamic_effective),
+                 new_cfg->dynamic_saturation_pct);
+    }
+}
+
+static void log_character_switch_boot_state(bool dsp_enabled,
+                                            const dsp_character_t *cfg)
+{
+    const bool character_effective = dsp_enabled && cfg->enabled;
+
+    ESP_LOGI(TAG,
+             "[boot/NVS] Analog Character: requested=%s effective=%s",
+             character_switch_text(cfg->enabled),
+             character_switch_text(character_effective));
+    ESP_LOGI(TAG,
+             "[boot/NVS] Harmonic Interaction: requested=%s effective=%s amount=%.0f%%",
+             character_switch_text(cfg->harmonic_interaction_enabled),
+             character_switch_text(character_effective &&
+                                   cfg->harmonic_interaction_enabled),
+             cfg->harmonic_interaction_pct);
+    ESP_LOGI(TAG,
+             "[boot/NVS] Dynamic Saturation: requested=%s effective=%s amount=%.0f%%",
+             character_switch_text(cfg->dynamic_saturation_enabled),
+             character_switch_text(character_effective &&
+                                   cfg->dynamic_saturation_enabled),
+             cfg->dynamic_saturation_pct);
+}
+
 static bool character_config_valid(const dsp_character_t *c)
 {
     if (!c || c->mode < DSP_CHARACTER_CUSTOM ||
@@ -1316,6 +1405,8 @@ esp_err_t dsp_engine_init(void)
         s_character.drive_pct
     );
 
+    log_character_switch_boot_state(s_enabled, &s_character);
+
 
     return ESP_OK;
 }
@@ -1331,17 +1422,26 @@ esp_err_t dsp_engine_set_enabled(
         return ESP_ERR_INVALID_STATE;
 
 
+    bool previous_enabled;
+    dsp_character_t character_snapshot;
+
     xSemaphoreTake(
         s_lock,
         portMAX_DELAY
     );
 
-    s_enabled =
-        enabled;
+    previous_enabled = s_enabled;
+    character_snapshot = s_character;
+    s_enabled = enabled;
 
     xSemaphoreGive(
         s_lock
     );
+
+    log_character_switch_changes(
+        "DSP/master",
+        previous_enabled, &character_snapshot,
+        enabled, &character_snapshot);
 
 
     /*
@@ -1951,9 +2051,19 @@ esp_err_t dsp_engine_set_character(const dsp_character_t *config)
     next.memory_pct = 0.0f;
     next.spectral_pct = 0.0f;
 
+    dsp_character_t previous;
+    bool dsp_enabled;
+
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    previous = s_character;
+    dsp_enabled = s_enabled;
     s_character = next;
     xSemaphoreGive(s_lock);
+
+    log_character_switch_changes(
+        "API/Character",
+        dsp_enabled, &previous,
+        dsp_enabled, &next);
 
     return ESP_OK;
 }
