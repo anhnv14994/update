@@ -624,12 +624,12 @@ static void calc_butterworth_hpf_q(
 
 
 /* ============================================================
- * Analog Character V5 Lite — two-stage low-cost ADAA
+ * Analog Character V5.1 Lite — two-stage low-cost ADAA
  * ============================================================
 
  * Each stage uses a band-limited source and an asymmetric quadratic/cubic
  * transfer. First-order ADAA is evaluated in closed form: no LUT access,
- * logarithm, or per-sample division. A lightweight envelope follower adds
+ * logarithm, or per-sample division. A lightweight mean-square detector adds
  * level-dependent harmonic shaping; V4 memory/supply branches are removed.
  *
  * For f(x)=a2*x^2+a3*x^3, the exact first-order ADAA interval averages are:
@@ -1232,7 +1232,7 @@ esp_err_t dsp_engine_init(void)
 
     ESP_LOGI(
         TAG,
-        "Character V5 Lite: enabled=%d mode=%d W=%.0f D=%.0f Drive=%.0f stages=2",
+        "Character V5.1 Lite: enabled=%d mode=%d W=%.0f D=%.0f Drive=%.0f stages=2",
         s_character.enabled, (int)s_character.mode,
         s_character.warmth_pct, s_character.detail_pct,
         s_character.drive_pct
@@ -2300,9 +2300,10 @@ const uint8_t *dsp_engine_process(
                          * rise, taper nonlinear mix to keep dense passages open. */
                         const float level_norm =
                             clampf_local(mean_square * 32.0f, 0.0f, 1.0f);
+                        const float diagnostic_drive = diag_drive ? cs->drive : 0.0f;
                         const float harmonic_intensity =
                             clampf_local(0.65f * cs->warmth +
-                                         0.35f * cs->drive, 0.0f, 1.0f);
+                                         0.35f * diagnostic_drive, 0.0f, 1.0f);
                         const float im_guard = 1.0f -
                             0.22f * harmonic_intensity * level_norm;
 
