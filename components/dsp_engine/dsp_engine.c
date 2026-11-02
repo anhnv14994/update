@@ -24,6 +24,7 @@ static const char *TAG = "dsp_engine";
 #define DSP_NVS_NAMESPACE    "dsp_cfg"
 #define DSP_NVS_KEY_ENABLED  "enabled"
 #define DSP_NVS_KEY_ACTIVE   "active"
+#define DSP_SCRATCH_MAX_BYTES 2048U
 
 #define DSP_PRESET_MAGIC     0x44535031u   /* "DSP1" */
 #define DSP_PRESET_VERSION   2u
@@ -1321,6 +1322,16 @@ esp_err_t dsp_engine_init(void)
     if (s_lock)
         return ESP_OK;
 
+    /* Allocate the maximum RAOP PCM frame before playback; never realloc in DSP. */
+    if (s_scratch_len < DSP_SCRATCH_MAX_BYTES) {
+        uint8_t *new_scratch = malloc(DSP_SCRATCH_MAX_BYTES);
+        if (!new_scratch)
+            return ESP_ERR_NO_MEM;
+
+        free(s_scratch);
+        s_scratch = new_scratch;
+        s_scratch_len = DSP_SCRATCH_MAX_BYTES;
+    }
 
     s_lock =
         xSemaphoreCreateMutex();
@@ -2702,32 +2713,14 @@ const uint8_t *dsp_engine_process(
      * Scratch buffer.
      */
 
-    if (s_scratch_len < required) {
-
-        uint8_t *new_buf =
-            realloc(
-                s_scratch,
-                required
-            );
-
-
-        if (!new_buf) {
-
-            ESP_LOGW(
-                TAG,
-                "DSP scratch allocation failed: %u",
-                (unsigned)required
-            );
-
-            return pcm_in;
-        }
-
-
-        s_scratch =
-            new_buf;
-
-        s_scratch_len =
-            required;
+    if (!s_scratch || required > s_scratch_len) {
+        ESP_LOGE(
+            TAG,
+            "PCM frame exceeds preallocated DSP scratch: %u > %u",
+            (unsigned)required,
+            (unsigned)s_scratch_len
+        );
+        return pcm_in;
     }
 
 
