@@ -307,6 +307,8 @@ static cJSON *build_state_json(void)
         cJSON_AddNumberToObject(ch, "air_pct", character.air_pct);
         cJSON_AddNumberToObject(ch, "memory_pct", character.memory_pct);
         cJSON_AddNumberToObject(ch, "spectral_pct", character.spectral_pct);
+        cJSON_AddNumberToObject(ch, "stage_mask", character.stage_mask);
+        cJSON_AddNumberToObject(ch, "feature_mask", character.feature_mask);
         cJSON_AddItemToObject(root, "character", ch);
     }
 
@@ -758,6 +760,8 @@ static esp_err_t api_character_handler(httpd_req_t *req)
             current.air_pct = 22.0f;
             current.memory_pct = 64.0f;
             current.spectral_pct = 42.0f;
+            current.stage_mask = DSP_CHARACTER_STAGE_ALL;
+            current.feature_mask = DSP_CHARACTER_FEATURE_ALL;
         } else if (m == DSP_CHARACTER_BRITISH) {
             current.enabled = true;
             current.mode = DSP_CHARACTER_BRITISH;
@@ -768,6 +772,8 @@ static esp_err_t api_character_handler(httpd_req_t *req)
             current.air_pct = 38.0f;
             current.memory_pct = 30.0f;
             current.spectral_pct = 58.0f;
+            current.stage_mask = DSP_CHARACTER_STAGE_ALL;
+            current.feature_mask = DSP_CHARACTER_FEATURE_ALL;
         } else if (m == DSP_CHARACTER_CUSTOM) {
             current.mode = DSP_CHARACTER_CUSTOM;
         } else {
@@ -794,6 +800,24 @@ static esp_err_t api_character_handler(httpd_req_t *req)
     if (v && cJSON_IsNumber(v)) current.memory_pct = (float)v->valuedouble;
     v = cJSON_GetObjectItem(body, "spectral_pct");
     if (v && cJSON_IsNumber(v)) current.spectral_pct = (float)v->valuedouble;
+
+    v = cJSON_GetObjectItem(body, "stage_mask");
+    if (v && cJSON_IsNumber(v)) {
+        if (v->valueint < 0 || v->valueint > 255) {
+            cJSON_Delete(body);
+            return send_error_json(req, 400, "stage_mask out of range");
+        }
+        current.stage_mask = (uint8_t)v->valueint;
+    }
+
+    v = cJSON_GetObjectItem(body, "feature_mask");
+    if (v && cJSON_IsNumber(v)) {
+        if (v->valueint < 0 || v->valueint > 255) {
+            cJSON_Delete(body);
+            return send_error_json(req, 400, "feature_mask out of range");
+        }
+        current.feature_mask = (uint8_t)v->valueint;
+    }
 
     cJSON_Delete(body);
 
