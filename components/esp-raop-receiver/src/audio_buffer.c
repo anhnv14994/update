@@ -85,6 +85,8 @@ typedef struct {
     _Atomic uint32_t dsp_total_us;
     _Atomic uint32_t dsp_max_us;
     _Atomic uint32_t dsp_total_samples;
+    _Atomic uint32_t raw_queue_high_water;
+    _Atomic uint32_t dsp_queue_high_water;
     uint32_t last_log_ms;
 } audio_stats_t;
 
@@ -121,6 +123,7 @@ static struct {
  * ======================================================================== */
 
 static dsp_frame_t *dsp_frames = NULL;
+static bool dsp_frames_internal = false;
 
 static _Atomic uint32_t dsp_read_idx = 0;
 static _Atomic uint32_t dsp_write_idx = 0;
@@ -234,6 +237,16 @@ static inline uint32_t gettime_ms(void)
  * Stats helpers
  * ======================================================================== */
 
+static void atomic_max_u32(_Atomic uint32_t *target, uint32_t value)
+{
+    uint32_t previous = atomic_load_explicit(target, memory_order_relaxed);
+    while (value > previous &&
+           !atomic_compare_exchange_weak_explicit(
+               target, &previous, value,
+               memory_order_relaxed, memory_order_relaxed)) {
+    }
+}
+
 static void stats_reset(void)
 {
     atomic_store_explicit(&out_stats.underruns, 0, memory_order_relaxed);
@@ -246,6 +259,8 @@ static void stats_reset(void)
     atomic_store_explicit(&out_stats.dsp_total_us, 0, memory_order_relaxed);
     atomic_store_explicit(&out_stats.dsp_max_us, 0, memory_order_relaxed);
     atomic_store_explicit(&out_stats.dsp_total_samples, 0, memory_order_relaxed);
+    atomic_store_explicit(&out_stats.raw_queue_high_water, 0, memory_order_relaxed);
+    atomic_store_explicit(&out_stats.dsp_queue_high_water, 0, memory_order_relaxed);
     out_stats.last_log_ms = gettime_ms();
 }
 
@@ -683,10 +698,17 @@ static void audio_dsp_task(void *arg)
             continue;
         }
 
+        const uint32_t next_dsp_w = dsp_ring_next(dsp_w);
         atomic_store_explicit(
             &dsp_write_idx,
-            dsp_ring_next(dsp_w),
+            next_dsp_w,
             memory_order_release);
+
+        const uint32_t published_dsp_r = atomic_load_explicit(
+            &dsp_read_idx, memory_order_acquire);
+        atomic_max_u32(
+            &out_stats.dsp_queue_high_water,
+            dsp_ring_count(published_dsp_r, next_dsp_w));
     }
 
     ESP_LOGI(TAG, "DSP task exiting");
@@ -1354,6 +1376,11 @@ static void audio_output_task(void *arg)
                     &out_stats.dsp_drops,
                     memory_order_relaxed);
 
+            uint32_t raw_q_hi = atomic_load_explicit(
+                &out_stats.raw_queue_high_water, memory_order_relaxed);
+            uint32_t dsp_q_hi = atomic_load_explicit(
+                &out_stats.dsp_queue_high_water, memory_order_relaxed);
+
             int dma_lead =
                 (int)(
                     (dac_end_us -
@@ -1374,6 +1401,8 @@ static void audio_output_task(void *arg)
                 "budget=%u us "
                 "dsp_wait=%u "
                 "dsp_drop=%u "
+                "raw_q_hi=%u "
+                "dsp_q_hi=%u "
                 "dma_lead=%d ms "
                 "drift+=%u "
                 "drift-=%u "
@@ -1389,6 +1418,8 @@ static void audio_output_task(void *arg)
                 dsp_budget_us,
                 dsp_waits,
                 dsp_drops,
+                raw_q_hi,
+                dsp_q_hi,
                 dma_lead,
                 drift_inserts,
                 drift_drops,
@@ -1470,12 +1501,22 @@ void audio_buffer_init(
         return;
     }
 
+    /* Hot DSP frames are read/written on every block; prefer internal SRAM. */
     dsp_frames = heap_caps_malloc(
         DSP_PIPE_FRAMES * sizeof(dsp_frame_t),
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    dsp_frames_internal = (dsp_frames != NULL);
+
+    /* Keep a PSRAM fallback so lower-internal-heap builds still boot. */
+    if (!dsp_frames) {
+        dsp_frames = heap_caps_malloc(
+            DSP_PIPE_FRAMES * sizeof(dsp_frame_t),
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        dsp_frames_internal = false;
+    }
 
     if (!dsp_frames) {
-        ESP_LOGE(TAG, "Failed to allocate DSP pipeline in PSRAM");
+        ESP_LOGE(TAG, "Failed to allocate DSP pipeline in internal RAM or PSRAM");
         vSemaphoreDelete(audio_buf.dsp_done);
         audio_buf.dsp_done = NULL;
         vSemaphoreDelete(audio_buf.task_done);
@@ -1505,11 +1546,12 @@ void audio_buffer_init(
         TAG,
         "Audio buffer initialized "
         "(SPSC raw=%u frames, ~%u KB PSRAM, "
-        "SPSC DSP=%u frames, ~%u KB)",
+        "SPSC DSP=%u frames, ~%u KB, memory=%s)",
         BUFFER_FRAMES,
         (unsigned)(BUFFER_FRAMES * sizeof(audio_frame_t) / 1024),
         DSP_PIPE_FRAMES,
-        (unsigned)(DSP_PIPE_FRAMES * sizeof(dsp_frame_t) / 1024));
+        (unsigned)(DSP_PIPE_FRAMES * sizeof(dsp_frame_t) / 1024),
+        dsp_frames_internal ? "internal" : "PSRAM-fallback");
 }
 
 /* ========================================================================
@@ -1745,6 +1787,10 @@ bool audio_buffer_write(
         &audio_buf.write_idx,
         next_write,
         memory_order_release);
+
+    atomic_max_u32(
+        &out_stats.raw_queue_high_water,
+        raw_ring_count(read_idx, next_write));
 
     return true;
 }
