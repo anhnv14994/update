@@ -477,16 +477,19 @@ static esp_err_t dsp_page_handler(
     httpd_req_t *req
 )
 {
-    httpd_resp_set_type(
-        req,
-        "text/html"
-    );
+    httpd_resp_set_type(req, "text/html");
+
+    /* The page is embedded in firmware. Never allow a browser/proxy to keep
+     * an older /dsp page after OTA or a firmware rebuild. */
+    httpd_resp_set_hdr(req, "Cache-Control",
+                       "no-store, no-cache, must-revalidate, max-age=0");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+    httpd_resp_set_hdr(req, "Expires", "0");
 
     httpd_resp_send(
         req,
         web_dsp_html_start,
-        web_dsp_html_end -
-        web_dsp_html_start
+        web_dsp_html_end - web_dsp_html_start
     );
 
     return ESP_OK;
