@@ -2186,7 +2186,17 @@ uint8_t *dsp_engine_process(
         (active_stage_mask & DSP_CHARACTER_STAGE_1) != 0 &&
         (interaction_start > 0.000001f || interaction_end > 0.000001f);
 
-
+    const uint8_t stages_just_disabled =
+        s_character_active_stage_mask & (uint8_t)(~active_stage_mask);
+    if (active_stage_mask != s_character_active_stage_mask) {
+        memset(s_character_residual_hpf, 0, sizeof(s_character_residual_hpf));
+    }
+    for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+        if (stages_just_disabled & (1U << stage)) {
+            memset(&cs->stage[stage], 0, sizeof(cs->stage[stage]));
+        }
+    }
+    s_character_active_stage_mask = active_stage_mask;
 
     for (size_t i = 0;
          i < frames;
@@ -2254,23 +2264,6 @@ uint8_t *dsp_engine_process(
          * Both controls are optional; no extra nonlinear/filter stage is added.
          */
         {
-            const uint8_t stages_just_disabled =
-                s_character_active_stage_mask & (uint8_t)(~active_stage_mask);
-
-            /* Prevent a bypassed Stage's old residual from leaking through
-             * the new shared filter after a diagnostic A/B mask change. */
-            if (active_stage_mask != s_character_active_stage_mask) {
-                memset(s_character_residual_hpf, 0,
-                       sizeof(s_character_residual_hpf));
-            }
-
-            for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
-                if (stages_just_disabled & (1U << stage)) {
-                    memset(&cs->stage[stage], 0, sizeof(cs->stage[stage]));
-                }
-            }
-            s_character_active_stage_mask = active_stage_mask;
-
             const bool character_mix_active =
                 (active_stage_mask != 0) || cs->running;
 
