@@ -2970,9 +2970,11 @@ const uint8_t *dsp_engine_process(
                         (cs->supply_envelope - 0.025f) / 0.20f, 0.0f, 1.0f);
                 }
 
+                const float effective_softness =
+                    diag_softness ? cs->softness : 0.0f;
                 const float supply_sag = memory_active
                     ? 0.055f * cs->memory *
-                        (0.35f + 0.65f * cs->softness) * supply_level
+                        (0.35f + 0.65f * effective_softness) * supply_level
                     : 0.0f;
                 const float common_drive = diag_drive
                     ? (0.90f + 1.90f * cs->drive) * (1.0f - supply_sag)
