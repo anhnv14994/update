@@ -247,6 +247,77 @@ static void atomic_max_u32(_Atomic uint32_t *target, uint32_t value)
     }
 }
 
+#if defined(CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS) && CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
+#define AUDIO_RUNTIME_TASK_CAPACITY 32
+#define AUDIO_RUNTIME_TRACK_COUNT 5
+
+typedef struct {
+    const char *name;
+    TaskHandle_t handle;
+    configRUN_TIME_COUNTER_TYPE previous;
+    bool valid;
+    uint64_t delta;
+} audio_runtime_track_t;
+
+static TaskStatus_t s_runtime_snapshot[AUDIO_RUNTIME_TASK_CAPACITY];
+static audio_runtime_track_t s_runtime_tracks[AUDIO_RUNTIME_TRACK_COUNT] = {
+    { .name = "audio_dsp" },
+    { .name = "audio_output" },
+    { .name = "RTP_thread" },
+    { .name = "IDLE0" },
+    { .name = "IDLE1" },
+};
+
+static void audio_log_task_runtime_stats(void)
+{
+    const UBaseType_t task_count = uxTaskGetNumberOfTasks();
+    if (task_count == 0 || task_count > AUDIO_RUNTIME_TASK_CAPACITY)
+        return;
+
+    configRUN_TIME_COUNTER_TYPE total_runtime = 0;
+    const UBaseType_t captured = uxTaskGetSystemState(
+        s_runtime_snapshot, task_count, &total_runtime);
+    if (captured == 0)
+        return;
+
+    for (unsigned slot = 0; slot < AUDIO_RUNTIME_TRACK_COUNT; ++slot) {
+        audio_runtime_track_t *track = &s_runtime_tracks[slot];
+        track->delta = 0;
+
+        for (UBaseType_t i = 0; i < captured; ++i) {
+            const TaskStatus_t *task = &s_runtime_snapshot[i];
+            if (strcmp(task->pcTaskName, track->name) != 0)
+                continue;
+
+            if (track->valid && track->handle == task->xHandle) {
+                const configRUN_TIME_COUNTER_TYPE elapsed =
+                    (configRUN_TIME_COUNTER_TYPE)(
+                        task->ulRunTimeCounter - track->previous);
+#if defined(CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER) && CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER
+                track->delta = (uint64_t)elapsed; /* ESP Timer counter is in us. */
+#else
+                track->delta = (uint64_t)elapsed /
+                    (uint64_t)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+#endif
+            }
+
+            track->handle = task->xHandle;
+            track->previous = task->ulRunTimeCounter;
+            track->valid = true;
+            break;
+        }
+    }
+
+    ESP_LOGI(TAG,
+             "task_cpu_5s_us: dsp=%llu output=%llu rtp=%llu idle0=%llu idle1=%llu",
+             (unsigned long long)s_runtime_tracks[0].delta,
+             (unsigned long long)s_runtime_tracks[1].delta,
+             (unsigned long long)s_runtime_tracks[2].delta,
+             (unsigned long long)s_runtime_tracks[3].delta,
+             (unsigned long long)s_runtime_tracks[4].delta);
+}
+#endif
+
 static void stats_reset(void)
 {
     atomic_store_explicit(&out_stats.underruns, 0, memory_order_relaxed);
@@ -1424,6 +1495,10 @@ static void audio_output_task(void *arg)
                 drift_inserts,
                 drift_drops,
                 (int)(drift_ema_us / 1000));
+
+#if defined(CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS) && CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
+            audio_log_task_runtime_stats();
+#endif
 
             stats_reset();
             drift_inserts = 0;
