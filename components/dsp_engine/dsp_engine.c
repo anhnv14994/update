@@ -163,20 +163,21 @@ static dsp_character_t s_character = {
 typedef struct {
     biquad_coef_t input_hpf;
     biquad_coef_t input_lpf;
-    biquad_coef_t residual_hpf;
     float ms_alpha;
 } character_stage_filter_t;
 
 typedef struct {
     character_stage_filter_t stage[CHARACTER_STAGE_COUNT];
+    /* The identical residual HPF is shared after summing both stage outputs. */
+    biquad_coef_t residual_hpf;
 } character_filter_coef_t;
 
 typedef struct {
     biquad_state_t input_hpf[2];
     biquad_state_t input_lpf[2];
-    biquad_state_t residual_hpf[2];
     float mean_square[2];
     float prev_x[2];
+    float prev_band_power[2];
     float prev_even_gain[2];
     float prev_odd_gain[2];
     float prev_mean_square[2];
@@ -196,6 +197,7 @@ typedef struct {
 
 static character_filter_coef_t s_character_filters;
 static character_state_t s_character_state;
+static biquad_state_t s_character_residual_hpf[2];
 
 /* Runtime-only diagnostic switches; deliberately excluded from NVS. */
 static _Atomic uint32_t s_character_diag_stage_mask = DSP_CHARACTER_STAGE_MASK_ALL;
@@ -637,35 +639,25 @@ static void calc_butterworth_hpf_q(
  *   AA3 = (x^3 + x^2*p + x*p^2 + p^3) / 4
  */
 static inline float character_adaa_poly_residual(
-    float x, float x_prev,
+    float x, float x2, float x_prev, float x2_prev,
     float mean_square, float mean_square_prev,
     float even_gain, float odd_gain)
 {
-    const float p = x_prev;
-    const float x2 = x * x;
-    const float p2 = p * p;
-    const float xp = x * p;
-
-    /* A mean-square detector tracks multi-component audio more consistently
-     * than converting an average-absolute envelope into a sine peak. */
-    if (even_gain == 0.0f && odd_gain == 0.0f)
-        return 0.0f;
-
-    const float ms = fmaxf(0.0f, 0.5f * (mean_square + mean_square_prev));
+    /* Reuse the detector's current power and cached previous power. */
+    const float xp = x * x_prev;
+    const float ms = 0.5f * (mean_square + mean_square_prev);
     float residual = 0.0f;
 
     if (even_gain != 0.0f) {
-        const float aa2 = (x2 + xp + p2) * 0.333333333333f;
-        const float h2 = aa2 - ms;
-        residual += even_gain * h2;
+        const float aa2 = (x2 + xp + x2_prev) * 0.333333333333f;
+        residual += even_gain * (aa2 - ms);
     }
 
     if (odd_gain != 0.0f) {
-        const float aa3 =
-            (x2 * x + x2 * p + x * p2 + p2 * p) * 0.25f;
-        const float mid = (x + p) * 0.5f;
-        const float h3 = aa3 - 1.5f * ms * mid;
-        residual += odd_gain * h3;
+        /* Algebraically identical to x³+x²p+xp²+p³, with fewer multiplies. */
+        const float aa3 = (x + x_prev) * (x2 + x2_prev) * 0.25f;
+        const float mid = (x + x_prev) * 0.5f;
+        residual += odd_gain * (aa3 - 1.5f * ms * mid);
     }
 
     return residual;
@@ -686,11 +678,12 @@ static void rebuild_character_filters(void)
                                0.70710678118f, &next.stage[stage].input_hpf);
         calc_butterworth_lpf_q(DSP_SAMPLE_RATE_HZ, source_lp[stage],
                                0.70710678118f, &next.stage[stage].input_lpf);
-        calc_butterworth_hpf_q(DSP_SAMPLE_RATE_HZ, 15.0f,
-                               0.70710678118f, &next.stage[stage].residual_hpf);
         next.stage[stage].ms_alpha = 1.0f - expf(
             -1.0f / (mean_square_ms[stage] * 0.001f * DSP_SAMPLE_RATE_HZ));
     }
+
+    calc_butterworth_hpf_q(DSP_SAMPLE_RATE_HZ, 15.0f,
+                           0.70710678118f, &next.residual_hpf);
 
     if (s_lock)
         xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -702,6 +695,7 @@ static void rebuild_character_filters(void)
 static void reset_character_states(void)
 {
     memset(&s_character_state, 0, sizeof(s_character_state));
+    memset(s_character_residual_hpf, 0, sizeof(s_character_residual_hpf));
     s_character_active_stage_mask = 0;
 }
 
@@ -2259,6 +2253,14 @@ const uint8_t *dsp_engine_process(
 
             const uint8_t stages_just_disabled =
                 s_character_active_stage_mask & (uint8_t)(~active_stage_mask);
+
+            /* Prevent a bypassed Stage's old residual from leaking through
+             * the new shared filter after a diagnostic A/B mask change. */
+            if (active_stage_mask != s_character_active_stage_mask) {
+                memset(s_character_residual_hpf, 0,
+                       sizeof(s_character_residual_hpf));
+            }
+
             for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
                 if (stages_just_disabled & (1U << stage)) {
                     memset(&cs->stage[stage], 0, sizeof(cs->stage[stage]));
@@ -2282,6 +2284,18 @@ const uint8_t *dsp_engine_process(
                     const character_stage_filter_t *fc =
                         &character_filters.stage[stage];
 
+                    const bool interaction_for_stage =
+                        (stage == 1) && (cs->interaction > 0.000001f) &&
+                        ((active_stage_mask & DSP_CHARACTER_STAGE_1) != 0);
+                    const bool dynamic_active =
+                        cs->dynamic_saturation > 0.000001f;
+                    const float diagnostic_drive =
+                        diag_drive ? cs->drive : 0.0f;
+                    const float harmonic_intensity = clampf_local(
+                        0.65f * cs->warmth + 0.35f * diagnostic_drive,
+                        0.0f, 1.0f);
+                    const float im_guard_amount = 0.22f * harmonic_intensity;
+
                     for (unsigned ch = 0; ch < 2; ++ch) {
                         float band = biquad_process_sample(
                             dry[ch], &fc->input_hpf, &ss->input_hpf[ch]);
@@ -2291,48 +2305,43 @@ const uint8_t *dsp_engine_process(
                         const float band_power = band * band;
                         ss->mean_square[ch] += fc->ms_alpha *
                             (band_power - ss->mean_square[ch]);
-                        const float mean_square = fmaxf(0.0f, ss->mean_square[ch]);
+                        /* The power follower is a convex average of nonnegative
+                         * samples, so it cannot become negative in normal operation. */
+                        const float mean_square = ss->mean_square[ch];
 
                         float even_gain = h2_gain[stage];
                         float odd_gain = h3_gain[stage];
 
-                        /* Conservative density guard: as Drive and band energy
-                         * rise, taper nonlinear mix to keep dense passages open. */
-                        const float level_norm =
-                            clampf_local(mean_square * 32.0f, 0.0f, 1.0f);
-                        const float diagnostic_drive = diag_drive ? cs->drive : 0.0f;
-                        const float harmonic_intensity =
-                            clampf_local(0.65f * cs->warmth +
-                                         0.35f * diagnostic_drive, 0.0f, 1.0f);
+                        const float level_raw = mean_square * 32.0f;
+                        const float level_norm = (level_raw < 1.0f)
+                            ? level_raw : 1.0f;
                         const float im_guard = 1.0f -
-                            0.22f * harmonic_intensity * level_norm;
+                            im_guard_amount * level_norm;
 
-                        /* Level-dependent saturation changes only harmonic
-                         * coefficients; it does not compress the dry signal. */
-                        const float dynamic_scale = 1.0f +
-                            0.20f * cs->dynamic_saturation * level_norm;
-
-                        /* Stage 1 low-mid energy gently modulates Stage 2 harmonic
-                         * density, helping control buildup without another stage. */
-                        float interaction_scale = 1.0f;
-                        if (stage == 1 && (active_stage_mask & DSP_CHARACTER_STAGE_1)) {
-                            const float lower_ms = cs->stage[0].mean_square[ch];
-                            const float lower_norm =
-                                clampf_local(lower_ms * 48.0f, 0.0f, 1.0f);
-                            interaction_scale = 1.0f -
-                                0.25f * cs->interaction * lower_norm;
+                        /* Skip optional modifier arithmetic entirely while OFF. */
+                        float harmonic_scale = im_guard;
+                        if (dynamic_active) {
+                            harmonic_scale *= 1.0f +
+                                0.20f * cs->dynamic_saturation * level_norm;
                         }
-
-                        const float harmonic_scale = clampf_local(
-                            im_guard * dynamic_scale * interaction_scale,
-                            0.65f, 1.25f);
+                        if (interaction_for_stage) {
+                            const float lower_ms = cs->stage[0].mean_square[ch];
+                            const float lower_raw = lower_ms * 48.0f;
+                            const float lower_norm = (lower_raw < 1.0f)
+                                ? lower_raw : 1.0f;
+                            harmonic_scale *=
+                                1.0f - 0.25f * cs->interaction * lower_norm;
+                        }
+                        harmonic_scale = clampf_local(
+                            harmonic_scale, 0.65f, 1.25f);
                         even_gain *= harmonic_scale;
                         odd_gain *= harmonic_scale;
 
                         float residual;
                         if (ss->adaa_valid[ch]) {
                             residual = character_adaa_poly_residual(
-                                band, ss->prev_x[ch],
+                                band, band_power, ss->prev_x[ch],
+                                ss->prev_band_power[ch],
                                 mean_square, ss->prev_mean_square[ch],
                                 0.5f * (even_gain + ss->prev_even_gain[ch]),
                                 0.5f * (odd_gain + ss->prev_odd_gain[ch]));
@@ -2340,27 +2349,42 @@ const uint8_t *dsp_engine_process(
                             residual = 0.0f;
                             if (even_gain != 0.0f) {
                                 residual += even_gain *
-                                    (band * band - mean_square);
+                                    (band_power - mean_square);
                             }
                             if (odd_gain != 0.0f) {
                                 residual += odd_gain *
-                                    (band * band * band - 1.5f * mean_square * band);
+                                    (band_power * band - 1.5f * mean_square * band);
                             }
                             ss->adaa_valid[ch] = true;
                         }
 
                         ss->prev_x[ch] = band;
+                        ss->prev_band_power[ch] = band_power;
                         ss->prev_even_gain[ch] = even_gain;
                         ss->prev_odd_gain[ch] = odd_gain;
                         ss->prev_mean_square[ch] = mean_square;
 
-                        residual = biquad_process_sample(
-                            residual, &fc->residual_hpf, &ss->residual_hpf[ch]);
                         residual_sum[ch] += residual;
                     }
 
                     character_stage_cycles[stage] +=
                         (uint32_t)(esp_cpu_get_cycle_count() - stage_start_cycles);
+                }
+
+                /* Both stages use identical 15 Hz HPFs. By linearity,
+                 * H(r1) + H(r2) == H(r1 + r2), so filter the sum once. */
+                const uint32_t residual_filter_start = esp_cpu_get_cycle_count();
+                for (unsigned ch = 0; ch < 2; ++ch) {
+                    residual_sum[ch] = biquad_process_sample(
+                        residual_sum[ch], &character_filters.residual_hpf,
+                        &s_character_residual_hpf[ch]);
+                }
+                const uint32_t residual_filter_cycles =
+                    (uint32_t)(esp_cpu_get_cycle_count() - residual_filter_start);
+                if (active_stage_mask & DSP_CHARACTER_STAGE_1) {
+                    character_stage_cycles[0] += residual_filter_cycles;
+                } else if (active_stage_mask & DSP_CHARACTER_STAGE_2) {
+                    character_stage_cycles[1] += residual_filter_cycles;
                 }
 
                 yl = dry[0] + residual_sum[0];
@@ -2369,6 +2393,8 @@ const uint8_t *dsp_engine_process(
                 cs->running = (active_stage_mask != 0);
                 if (!cs->running) {
                     memset(cs->stage, 0, sizeof(cs->stage));
+                    memset(s_character_residual_hpf, 0,
+                           sizeof(s_character_residual_hpf));
                     s_character_active_stage_mask = 0;
                 }
             }
