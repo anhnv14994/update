@@ -2611,78 +2611,59 @@ const uint8_t *dsp_engine_process(
 
 
     /*
-     * Snapshot configuration.
+     * Non-blocking configuration snapshot.
      *
-     * Keep audio loop free of mutex operations.
+     * The audio task is the only caller of dsp_engine_process(). If a web/API
+     * task briefly owns s_lock, reuse the last complete snapshot instead of
+     * stalling the real-time consumer and backing up the RAOP ring.
      */
-
-    bool enabled;
-    bool exc_enabled;
-    bool character_enabled;
-
-    uint8_t num_stages;
-
-    float master_linear;
-
-    biquad_coef_t coefs[DSP_NUM_STAGES];
-
-    dsp_exciter_t exciter;
-    dsp_character_t character;
-
-    exciter_filter_coef_t exc_filters;
-    character_filter_coef_t character_filters;
-
+    static struct {
+        bool valid;
+        bool enabled;
+        bool exc_enabled;
+        bool character_enabled;
+        uint8_t num_stages;
+        float master_linear;
+        biquad_coef_t coefs[DSP_NUM_STAGES];
+        dsp_exciter_t exciter;
+        dsp_character_t character;
+        exciter_filter_coef_t exc_filters;
+        character_filter_coef_t character_filters;
+    } cached;
 
     if (!s_lock)
         return pcm_in;
 
+    if (xSemaphoreTake(s_lock, 0) == pdTRUE) {
+        cached.enabled = s_enabled;
+        cached.num_stages = s_active_num_stages;
+        cached.master_linear = s_active_master_linear;
+        memcpy(cached.coefs, s_active_coefs, sizeof(cached.coefs));
 
-    xSemaphoreTake(
-        s_lock,
-        portMAX_DELAY
-    );
+        cached.exciter = s_exciter;
+        cached.exc_enabled = cached.exciter.enabled;
+        cached.character = s_character;
+        cached.character_enabled = cached.character.enabled;
+        cached.exc_filters = s_exciter_filter;
+        cached.character_filters = s_character_filters;
+        cached.valid = true;
 
+        xSemaphoreGive(s_lock);
+    } else if (!cached.valid) {
+        /* Startup contention: pass this first frame through rather than wait. */
+        return pcm_in;
+    }
 
-    enabled =
-        s_enabled;
-
-
-    num_stages =
-        s_active_num_stages;
-
-
-    master_linear =
-        s_active_master_linear;
-
-
-    memcpy(
-        coefs,
-        s_active_coefs,
-        sizeof(coefs)
-    );
-
-
-    exciter =
-        s_exciter;
-
-    exc_enabled =
-        exciter.enabled;
-
-    character =
-        s_character;
-    character_enabled =
-        character.enabled;
-
-    /* Snapshot both filter banks as complete structures. */
-    exc_filters =
-        s_exciter_filter;
-    character_filters =
-        s_character_filters;
-
-
-    xSemaphoreGive(
-        s_lock
-    );
+    enabled = cached.enabled;
+    num_stages = cached.num_stages;
+    master_linear = cached.master_linear;
+    memcpy(coefs, cached.coefs, sizeof(coefs));
+    exciter = cached.exciter;
+    exc_enabled = cached.exc_enabled;
+    character = cached.character;
+    character_enabled = cached.character_enabled;
+    exc_filters = cached.exc_filters;
+    character_filters = cached.character_filters;
 
 
     /*
@@ -2891,17 +2872,21 @@ const uint8_t *dsp_engine_process(
                     common_drive * 0.55f
                 };
 
+                /* All three nonlinear bands are fed from the same PEQ output.
+                 * Their filtered residuals are summed once, in parallel. */
+                const float character_dry[2] = { yl, yr };
+                float character_residual_sum[2] = { 0.0f, 0.0f };
+
                 for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
                     character_stage_state_t *ss = &cs->stage[stage];
                     const character_stage_filter_t *fc =
                         &character_filters.stage[stage];
-                    float *samples[2] = { &yl, &yr };
                     float band[2];
                     float residual[2];
 
                     for (unsigned ch = 0; ch < 2; ++ch) {
                         band[ch] = biquad_process_sample(
-                            *samples[ch], &fc->input_hpf, &ss->input_hpf[ch]);
+                            character_dry[ch], &fc->input_hpf, &ss->input_hpf[ch]);
                         band[ch] = biquad_process_sample(
                             band[ch], &fc->input_lpf, &ss->input_lpf[ch]);
                     }
@@ -2999,9 +2984,12 @@ const uint8_t *dsp_engine_process(
                                 r, &fc->residual_lpf, &ss->residual_lpf[ch]);
                         }
                         residual[ch] = r;
-                        *samples[ch] += residual[ch];
+                        character_residual_sum[ch] += residual[ch];
                     }
                 }
+
+                yl = character_dry[0] + character_residual_sum[0];
+                yr = character_dry[1] + character_residual_sum[1];
 
                 /* Air remains a separate subtle linear shelf, not a nonlinear
                  * high-frequency exciter. */
