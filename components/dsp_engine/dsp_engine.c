@@ -4,8 +4,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdatomic.h>
 
 #include "esp_log.h"
+#include "esp_cpu.h"
+#include "esp_clk.h"
+#include "esp_timer.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
@@ -78,7 +82,7 @@ static const char *TAG = "dsp_engine";
 
 
 #define DSP_CHARACTER_MAGIC   0x43485231u   /* "CHR1" */
-#define DSP_CHARACTER_VERSION 2u
+#define DSP_CHARACTER_VERSION 3u
 #define DSP_NVS_KEY_CHARACTER "character"
 
 
@@ -140,6 +144,25 @@ typedef struct {
     uint32_t version;
     dsp_character_v3_legacy_t character;
 } dsp_character_v3_legacy_blob_t;
+
+/* Exact V4.1/V4.2 persisted payload before diagnostic masks were added. */
+typedef struct {
+    bool enabled;
+    dsp_character_mode_t mode;
+    float warmth_pct;
+    float detail_pct;
+    float drive_pct;
+    float softness_pct;
+    float air_pct;
+    float memory_pct;
+    float spectral_pct;
+} dsp_character_v2_legacy_t;
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    dsp_character_v2_legacy_t character;
+} dsp_character_v2_legacy_blob_t;
 
 
 /* ============================================================
@@ -299,12 +322,20 @@ typedef struct {
     float spectral;
     float air_gain;
     float air_lp[2];
+    float stage_enable[CHARACTER_STAGE_COUNT];
     bool running;
 } character_state_t;
 
 
 static character_filter_coef_t s_character_filters;
 static character_state_t s_character_state;
+
+/* Per-frame cycle accounting; logged from the audio worker once per 5 seconds. */
+static _Atomic uint32_t s_character_diag_frames;
+static _Atomic uint32_t s_character_diag_total_cycles;
+static _Atomic uint32_t s_character_diag_stage_cycles[CHARACTER_STAGE_COUNT];
+static _Atomic uint32_t s_character_diag_stage_max_cycles[CHARACTER_STAGE_COUNT];
+static uint32_t s_character_diag_last_log_ms;
 
 
 /* ============================================================
@@ -931,6 +962,8 @@ static void set_character_factory(void)
     s_character.mode = DSP_CHARACTER_CUSTOM;
     s_character.memory_pct = 45.0f;
     s_character.spectral_pct = 50.0f;
+    s_character.stage_mask = DSP_CHARACTER_STAGE_ALL;
+    s_character.feature_mask = DSP_CHARACTER_FEATURE_ALL;
 }
 
 static bool character_config_valid(const dsp_character_t *c)
@@ -949,7 +982,9 @@ static bool character_config_valid(const dsp_character_t *c)
            c->softness_pct >= 0.0f && c->softness_pct <= 100.0f &&
            c->air_pct >= 0.0f && c->air_pct <= 100.0f &&
            c->memory_pct >= 0.0f && c->memory_pct <= 100.0f &&
-           c->spectral_pct >= 0.0f && c->spectral_pct <= 100.0f;
+           c->spectral_pct >= 0.0f && c->spectral_pct <= 100.0f &&
+           (c->stage_mask & (uint8_t)~DSP_CHARACTER_STAGE_ALL) == 0 &&
+           (c->feature_mask & (uint8_t)~DSP_CHARACTER_FEATURE_ALL) == 0;
 }
 
 static void character_profile_defaults(dsp_character_mode_t mode,
@@ -961,6 +996,8 @@ static void character_profile_defaults(dsp_character_mode_t mode,
     memset(out, 0, sizeof(*out));
     out->enabled = true;
     out->mode = mode;
+    out->stage_mask = DSP_CHARACTER_STAGE_ALL;
+    out->feature_mask = DSP_CHARACTER_FEATURE_ALL;
 
     if (mode == DSP_CHARACTER_TUBE) {
         out->warmth_pct = 62.0f;
@@ -1001,6 +1038,36 @@ static esp_err_t load_character_from_nvs(nvs_handle_t nvs)
             s_character = blob.character;
             return ESP_OK;
         }
+    } else if (len == sizeof(dsp_character_v2_legacy_blob_t)) {
+        dsp_character_v2_legacy_blob_t old_blob;
+        size_t read_len = sizeof(old_blob);
+        err = nvs_get_blob(nvs, DSP_NVS_KEY_CHARACTER, &old_blob, &read_len);
+        if (err == ESP_OK && read_len == sizeof(old_blob) &&
+            old_blob.magic == DSP_CHARACTER_MAGIC && old_blob.version == 2u) {
+            memset(&s_character, 0, sizeof(s_character));
+            s_character.enabled = old_blob.character.enabled;
+            s_character.mode = old_blob.character.mode;
+            s_character.warmth_pct = old_blob.character.warmth_pct;
+            s_character.detail_pct = old_blob.character.detail_pct;
+            s_character.drive_pct = old_blob.character.drive_pct;
+            s_character.softness_pct = old_blob.character.softness_pct;
+            s_character.air_pct = old_blob.character.air_pct;
+            s_character.memory_pct = old_blob.character.memory_pct;
+            s_character.spectral_pct = old_blob.character.spectral_pct;
+            s_character.stage_mask = DSP_CHARACTER_STAGE_ALL;
+            s_character.feature_mask = DSP_CHARACTER_FEATURE_ALL;
+            if (character_config_valid(&s_character)) {
+                dsp_character_blob_t migrated = {
+                    .magic = DSP_CHARACTER_MAGIC,
+                    .version = DSP_CHARACTER_VERSION,
+                    .character = s_character
+                };
+                (void)nvs_set_blob(nvs, DSP_NVS_KEY_CHARACTER,
+                                   &migrated, sizeof(migrated));
+                ESP_LOGI(TAG, "Character V4.2 NVS migrated to diagnostic config");
+                return ESP_OK;
+            }
+        }
     } else if (len == sizeof(dsp_character_v3_legacy_blob_t)) {
         dsp_character_v3_legacy_blob_t old_blob;
         size_t read_len = sizeof(old_blob);
@@ -1017,6 +1084,8 @@ static esp_err_t load_character_from_nvs(nvs_handle_t nvs)
             s_character.air_pct = old_blob.character.air_pct;
             s_character.memory_pct = 45.0f;
             s_character.spectral_pct = 50.0f;
+            s_character.stage_mask = DSP_CHARACTER_STAGE_ALL;
+            s_character.feature_mask = DSP_CHARACTER_FEATURE_ALL;
             if (character_config_valid(&s_character)) {
                 dsp_character_blob_t migrated = {
                     .magic = DSP_CHARACTER_MAGIC,
