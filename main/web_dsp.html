@@ -805,8 +805,6 @@ input[type=range]::-moz-range-thumb{
         <label class="switch"><input type="checkbox" id="charFeatSpectral" checked><span class="slider-toggle"></span></label>
       </div>
 
-      <div class="character-diag-title">Measured DSP time · microseconds</div>
-      <div class="diag-stats" id="characterDiagStats">Waiting for audio blocks…</div>
     </div>
 
   </div>
@@ -2032,10 +2030,6 @@ function renderCharacterDiagnostics(d){
     document.getElementById(id).checked = (d.feature_mask & bit) !== 0;
   });
 
-  const avg = d.stage_avg_us || [0,0,0];
-  const max = d.stage_max_us || [0,0,0];
-  document.getElementById("characterDiagStats").textContent =
-    `blocks=${d.blocks} | MHz=${d.cpu_mhz} | S1 ${avg[0]}/${max[0]} us | S2 ${avg[1]}/${max[1]} us | S3 ${avg[2]}/${max[2]} us`;
 }
 
 async function refreshCharacterDiagnostics(){
@@ -2043,8 +2037,7 @@ async function refreshCharacterDiagnostics(){
     const d = await api("/api/dsp/character_diag");
     renderCharacterDiagnostics(d);
   }catch(err){
-    console.error(err);
-    document.getElementById("characterDiagStats").textContent = "Diagnostic API unavailable";
+    console.error("Character diagnostic API unavailable", err);
   }
 }
 
@@ -2069,7 +2062,6 @@ async function updateCharacterDiagnostics(){
 });
 
 refreshCharacterDiagnostics();
-setInterval(refreshCharacterDiagnostics, 2500);
 
 
 /* =========================================================
