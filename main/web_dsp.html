@@ -568,10 +568,10 @@ input[type=range]::-moz-range-thumb{
 
   <div class="section">
 
-    <div class="peq-title">Analog Character <span style="font-size:12px;opacity:.65;">V5 Lite</span></div>
+    <div class="peq-title">Analog Character <span style="font-size:12px;opacity:.65;">V5.1 Lite</span></div>
 
     <div class="peq-subtitle">
-      Preamp DSP V5 Lite gồm 2 tầng nonlinear song song: Stage 1 tạo body bằng H2; Stage 2 bổ sung vocal core bằng H2/H3. Đã lược bỏ memory phức tạp và Bass Exciter để ưu tiên realtime trên ESP32-S3.
+      Preamp DSP V5.1 Lite giữ nguyên 2 tầng nonlinear. Mean-square detector cải thiện tracking tín hiệu nhiều thành phần; Harmonic Interaction và Dynamic Saturation là hai tùy chọn độc lập, mặc định tắt.
     </div>
 
     <div class="presets" id="characterProfiles">
@@ -611,6 +611,36 @@ input[type=range]::-moz-range-thumb{
       <input class="exciter-range" type="range" id="characterDrive" min="0" max="100" step="1" value="0">
     </div>
 
+    <div class="feature">
+      <div class="feature-text">
+        <div class="feature-name">Harmonic Interaction</div>
+        <div class="feature-info">Stage 1 điều tiết lượng hài Stage 2 ở vùng 320–650 Hz, hạn chế low-mid buildup.</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="characterInteractionEnabled">
+        <span class="slider-toggle"></span>
+      </label>
+    </div>
+    <div class="band">
+      <div class="row-label"><span>Interaction amount</span><b id="characterInteractionVal">0%</b></div>
+      <input class="exciter-range" type="range" id="characterInteraction" min="0" max="100" step="1" value="0">
+    </div>
+
+    <div class="feature">
+      <div class="feature-text">
+        <div class="feature-name">Dynamic Saturation</div>
+        <div class="feature-info">Tăng lượng hài theo năng lượng tín hiệu; không nén hoặc tự động giảm gain dry.</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="characterDynamicEnabled">
+        <span class="slider-toggle"></span>
+      </label>
+    </div>
+    <div class="band">
+      <div class="row-label"><span>Dynamic amount</span><b id="characterDynamicVal">0%</b></div>
+      <input class="exciter-range" type="range" id="characterDynamic" min="0" max="100" step="1" value="0">
+    </div>
+
 
 
 
@@ -618,13 +648,13 @@ input[type=range]::-moz-range-thumb{
     <div class="exciter-note">
       <strong>A — Tube Warm:</strong> tăng body và độ dày vocal, H2 trội hơn.<br>
       <strong>B — British Natural:</strong> nhẹ hơn, giữ độ thoáng và articulation.<br>
-      Chọn A/B để nạp thiết lập gợi ý; sau đó kéo slider để tinh chỉnh. Thay đổi áp dụng realtime,
+      Hai modifier mới mặc định OFF; bật từng mục để A/B độc lập. Thay đổi áp dụng realtime,
       nhấn <strong>Save preset</strong> để lưu vào NVS.
     </div>
 
     <div class="character-diag">
-      <div class="character-diag-title">A/B Diagnostics · V5 Lite · Session only</div>
-      <div class="peq-subtitle">Các công tắc chỉ dùng thử nghiệm realtime, không ghi vào NVS. V5 chỉ có 2 Stage và 3 nhánh điều khiển nhẹ.</div>
+      <div class="character-diag-title">A/B Diagnostics · V5.1 Lite · Session only</div>
+      <div class="peq-subtitle">Các switch A/B phía dưới chỉ dùng đo kiểm realtime, không ghi vào NVS. V5.1 vẫn giữ đúng 2 Stage.</div>
 
       <div class="character-diag-title">Nonlinear stages</div>
       <div class="feature">
@@ -1542,6 +1572,11 @@ const characterControls = [
   ["characterDetail", "detail_pct", "characterDetailVal"],
   ["characterDrive", "drive_pct", "characterDriveVal"]];
 
+const characterModifierControls = [
+  ["characterInteraction", "harmonic_interaction_pct", "characterInteractionVal"],
+  ["characterDynamic", "dynamic_saturation_pct", "characterDynamicVal"]
+];
+
 let characterTimer = null;
 
 function renderCharacter(){
@@ -1550,11 +1585,16 @@ function renderCharacter(){
 
   document.getElementById("characterEnabled").checked = !!c.enabled;
 
-  characterControls.forEach(([inputId, key, valueId]) => {
+  characterControls.concat(characterModifierControls).forEach(([inputId, key, valueId]) => {
     const value = Math.max(0, Math.min(100, Number(c[key] ?? 0)));
     document.getElementById(inputId).value = value;
     document.getElementById(valueId).textContent = `${Math.round(value)}%`;
   });
+
+  document.getElementById("characterInteractionEnabled").checked =
+    !!c.harmonic_interaction_enabled;
+  document.getElementById("characterDynamicEnabled").checked =
+    !!c.dynamic_saturation_enabled;
 
   const mode = Number(c.mode ?? 0);
   document.getElementById("characterTube").classList.toggle("active", mode === 1);
@@ -1589,9 +1629,13 @@ document.getElementById("characterEnabled").addEventListener("change", async e =
 
 function characterPayload(){
   const payload = {mode:0}; // any manual edit switches the profile label to CUSTOM
-  characterControls.forEach(([inputId, key]) => {
+  characterControls.concat(characterModifierControls).forEach(([inputId, key]) => {
     payload[key] = Number(document.getElementById(inputId).value);
   });
+  payload.harmonic_interaction_enabled =
+    document.getElementById("characterInteractionEnabled").checked;
+  payload.dynamic_saturation_enabled =
+    document.getElementById("characterDynamicEnabled").checked;
   return payload;
 }
 
@@ -1610,7 +1654,7 @@ async function updateCharacter(){
   }
 }
 
-characterControls.forEach(([inputId, key, valueId]) => {
+characterControls.concat(characterModifierControls).forEach(([inputId, key, valueId]) => {
   const slider = document.getElementById(inputId);
   slider.addEventListener("input", e => {
     document.getElementById(valueId).textContent = `${Math.round(Number(e.target.value))}%`;
@@ -1620,6 +1664,10 @@ characterControls.forEach(([inputId, key, valueId]) => {
     clearTimeout(characterTimer);
     updateCharacter();
   });
+});
+
+["characterInteractionEnabled", "characterDynamicEnabled"].forEach(id => {
+  document.getElementById(id).addEventListener("change", updateCharacter);
 });
 
 
