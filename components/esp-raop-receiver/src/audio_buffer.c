@@ -38,9 +38,9 @@ static const char *TAG = "audio_buffer";
 
 #define DSP_PIPE_FRAMES           16
 #define DSP_TASK_STACK_SIZE       8192
-/* DSP gets first access to the 16-frame pipeline; it yields when that queue is full. */
-#define DSP_TASK_PRIORITY         4
-#define DSP_TASK_CORE             1
+/* Keep realtime I2S output above the background DSP worker. */
+#define DSP_TASK_PRIORITY         2
+#define DSP_TASK_CORE             0
 
 #define AUDIO_TASK_STACK_SIZE     12288
 #define AUDIO_TASK_PRIORITY       3
