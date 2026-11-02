@@ -239,59 +239,6 @@ static cJSON *build_state_json(void)
 
 
     // ---------------------------------------------------------
-    // Harmonic Bass Exciter
-    // ---------------------------------------------------------
-
-    dsp_exciter_t exciter;
-
-    if (dsp_engine_get_exciter(&exciter) == ESP_OK) {
-
-        cJSON *exc =
-            cJSON_CreateObject();
-
-        cJSON_AddBoolToObject(
-            exc,
-            "enabled",
-            exciter.enabled
-        );
-
-        /*
-         * Gửi ra dạng % để JS dễ sử dụng.
-         *
-         * Engine:
-         *   0.06 = 6%
-         *
-         * Web:
-         *   6
-         */
-
-        cJSON_AddNumberToObject(
-            exc,
-            "h2_pct",
-            exciter.h2_pct * 100.0
-        );
-
-        cJSON_AddNumberToObject(
-            exc,
-            "h3_pct",
-            exciter.h3_pct * 100.0
-        );
-
-        cJSON_AddNumberToObject(
-            exc,
-            "crossover_hz",
-            exciter.crossover_hz
-        );
-
-        cJSON_AddItemToObject(
-            root,
-            "exciter",
-            exc
-        );
-    }
-
-
-    // ---------------------------------------------------------
     // Analog Character
     // ---------------------------------------------------------
 
@@ -561,177 +508,6 @@ static esp_err_t api_enabled_handler(
 
 
 // ---------------------------------------------------------------------------
-// HARMONIC BASS EXCITER
-//
-// JSON:
-// {
-//   "enabled": true,
-//   "h2_pct": 6.0,
-//   "h3_pct": 2.0,
-//   "crossover_hz": 60
-// }
-//
-// h2_pct / h3_pct là % trên web.
-// Engine tự đổi về 0.06 / 0.02.
-// ---------------------------------------------------------------------------
-
-static esp_err_t api_exciter_handler(
-    httpd_req_t *req
-)
-{
-    char buf[256];
-
-    cJSON *body =
-        parse_request_json(
-            req,
-            buf,
-            sizeof(buf)
-        );
-
-
-    if (!body)
-        return send_error_json(
-            req,
-            400,
-            "invalid or empty json"
-        );
-
-
-    dsp_exciter_t current;
-
-    if (dsp_engine_get_exciter(&current) != ESP_OK) {
-
-        cJSON_Delete(body);
-
-        return send_error_json(
-            req,
-            500,
-            "cannot read exciter"
-        );
-    }
-
-
-    // ---------------------------------------------------------
-    // enabled
-    // ---------------------------------------------------------
-
-    cJSON *enabled =
-        cJSON_GetObjectItem(
-            body,
-            "enabled"
-        );
-
-    if (enabled &&
-        cJSON_IsBool(enabled)) {
-
-        current.enabled =
-            cJSON_IsTrue(enabled);
-    }
-
-
-    /* A pure enable/disable request is deliberately isolated from every
-     * other DSP control. In particular it never touches global DSP enable,
-     * PEQ coefficients, active preset, or master gain. */
-    cJSON *h2_only = cJSON_GetObjectItem(body, "h2_pct");
-    cJSON *h3_only = cJSON_GetObjectItem(body, "h3_pct");
-    cJSON *xover_only = cJSON_GetObjectItem(body, "crossover_hz");
-    if (enabled && cJSON_IsBool(enabled) && !h2_only && !h3_only && !xover_only) {
-        esp_err_t toggle_err = dsp_engine_set_exciter_enabled(
-            cJSON_IsTrue(enabled));
-        cJSON_Delete(body);
-        if (toggle_err != ESP_OK)
-            return send_error_json(req, 400, "cannot toggle exciter");
-        return send_state(req);
-    }
-
-    // ---------------------------------------------------------
-    // H2 %
-    // ---------------------------------------------------------
-
-    cJSON *h2_full =
-        cJSON_GetObjectItem(
-            body,
-            "h2_pct"
-        );
-
-    if (h2_full &&
-        cJSON_IsNumber(h2_full)) {
-
-        current.h2_pct =
-            (float)h2_full->valuedouble /
-            100.0f;
-    }
-
-
-    // ---------------------------------------------------------
-    // H3 %
-    // ---------------------------------------------------------
-
-    cJSON *h3 =
-        cJSON_GetObjectItem(
-            body,
-            "h3_pct"
-        );
-
-    if (h3 &&
-        cJSON_IsNumber(h3)) {
-
-        current.h3_pct =
-            (float)h3->valuedouble /
-            100.0f;
-    }
-
-
-    // ---------------------------------------------------------
-    // Crossover
-    // ---------------------------------------------------------
-
-    cJSON *xover =
-        cJSON_GetObjectItem(
-            body,
-            "crossover_hz"
-        );
-
-    if (xover &&
-        cJSON_IsNumber(xover)) {
-
-        current.crossover_hz =
-            (float)xover->valuedouble;
-    }
-
-
-    esp_err_t err =
-        dsp_engine_set_exciter(
-            current.enabled,
-            current.h2_pct,
-            current.h3_pct,
-            current.crossover_hz
-        );
-
-
-    cJSON_Delete(body);
-
-
-    if (err != ESP_OK)
-        return send_error_json(
-            req,
-            400,
-            "invalid exciter parameters"
-        );
-
-
-    /*
-     * Trả state mới về browser.
-     *
-     * Realtime:
-     *   không ghi NVS.
-     */
-
-    return send_state(req);
-}
-
-
-// ---------------------------------------------------------------------------
 // Analog Character: profile A/B + realtime controls
 // ---------------------------------------------------------------------------
 
@@ -833,20 +609,12 @@ static esp_err_t api_character_handler(httpd_req_t *req)
             current.warmth_pct = 62.0f;
             current.detail_pct = 10.0f;
             current.drive_pct = 32.0f;
-            current.softness_pct = 55.0f;
-            current.air_pct = 22.0f;
-            current.memory_pct = 64.0f;
-            current.spectral_pct = 42.0f;
         } else if (m == DSP_CHARACTER_BRITISH) {
             current.enabled = true;
             current.mode = DSP_CHARACTER_BRITISH;
             current.warmth_pct = 34.0f;
             current.detail_pct = 18.0f;
             current.drive_pct = 18.0f;
-            current.softness_pct = 28.0f;
-            current.air_pct = 38.0f;
-            current.memory_pct = 30.0f;
-            current.spectral_pct = 58.0f;
         } else if (m == DSP_CHARACTER_CUSTOM) {
             current.mode = DSP_CHARACTER_CUSTOM;
         } else {
@@ -865,14 +633,6 @@ static esp_err_t api_character_handler(httpd_req_t *req)
     if (v && cJSON_IsNumber(v)) current.detail_pct = (float)v->valuedouble;
     v = cJSON_GetObjectItem(body, "drive_pct");
     if (v && cJSON_IsNumber(v)) current.drive_pct = (float)v->valuedouble;
-    v = cJSON_GetObjectItem(body, "softness_pct");
-    if (v && cJSON_IsNumber(v)) current.softness_pct = (float)v->valuedouble;
-    v = cJSON_GetObjectItem(body, "air_pct");
-    if (v && cJSON_IsNumber(v)) current.air_pct = (float)v->valuedouble;
-    v = cJSON_GetObjectItem(body, "memory_pct");
-    if (v && cJSON_IsNumber(v)) current.memory_pct = (float)v->valuedouble;
-    v = cJSON_GetObjectItem(body, "spectral_pct");
-    if (v && cJSON_IsNumber(v)) current.spectral_pct = (float)v->valuedouble;
 
     cJSON_Delete(body);
 
@@ -1333,18 +1093,6 @@ static esp_err_t api_save_handler(
         );
 
 
-    // Save Harmonic Exciter
-
-    err =
-        dsp_engine_save_exciter();
-
-    if (err != ESP_OK)
-        return send_error_json(
-            req,
-            500,
-            "nvs exciter write failed"
-        );
-
     err = dsp_engine_save_character();
     if (err != ESP_OK)
         return send_error_json(req, 500, "nvs character write failed");
@@ -1427,12 +1175,6 @@ esp_err_t dsp_api_register(
             .uri = "/api/dsp/enabled",
             .method = HTTP_POST,
             .handler = api_enabled_handler
-        },
-
-        {
-            .uri = "/api/dsp/exciter",
-            .method = HTTP_POST,
-            .handler = api_exciter_handler
         },
 
         {
