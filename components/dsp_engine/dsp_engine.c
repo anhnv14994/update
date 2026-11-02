@@ -9,7 +9,7 @@
 #include "esp_cpu.h"
 #include "sdkconfig.h"
 
-#if CONFIG_DSP_PEQ_USE_ESP_DSP
+#if CONFIG_DSP_PEQ_USE_ESP_DSP || CONFIG_DSP_PEQ_USE_ESP_DSP_AES3
 #include "dsps_biquad.h"
 #endif
 
@@ -137,10 +137,19 @@ static biquad_coef_t  s_active_coefs[DSP_NUM_STAGES];
 
 static float          s_active_master_linear = 1.0f;
 
-#if CONFIG_DSP_PEQ_USE_ESP_DSP
+#if CONFIG_DSP_PEQ_USE_ESP_DSP_AES3
 /*
- * Experimental Phase 3 PEQ backend:
- * interleaved stereo float block + ESP-DSP stereo DF-II kernel.
+ * Experimental ESP32-S3 mono biquad path. Two planar channels allow
+ * dsps_biquad_f32() to select the S3 AES3 implementation when the
+ * resolved ESP-DSP package has it and optimized kernels are enabled.
+ */
+#define DSP_PEQ_MAX_FRAMES (DSP_SCRATCH_MAX_BYTES / (2U * sizeof(int16_t)))
+static float s_peq_left[DSP_PEQ_MAX_FRAMES];
+static float s_peq_right[DSP_PEQ_MAX_FRAMES];
+static float s_peq_state[DSP_NUM_STAGES][2][2]; /* [stage][L/R][w0,w1] */
+#elif CONFIG_DSP_PEQ_USE_ESP_DSP
+/*
+ * Experimental interleaved stereo float block + ESP-DSP SF32 kernel.
  * Holds the largest 2048-byte RAOP PCM block (512 stereo frames).
  */
 #define DSP_PEQ_MAX_FLOATS (DSP_SCRATCH_MAX_BYTES / sizeof(int16_t))
@@ -1164,7 +1173,7 @@ esp_err_t dsp_engine_init(void)
      * Reset PEQ states.
      */
 
-#if CONFIG_DSP_PEQ_USE_ESP_DSP
+#if CONFIG_DSP_PEQ_USE_ESP_DSP || CONFIG_DSP_PEQ_USE_ESP_DSP_AES3
     memset(s_peq_state, 0, sizeof(s_peq_state));
 #else
     memset(s_state, 0, sizeof(s_state));
@@ -1290,8 +1299,10 @@ esp_err_t dsp_engine_init(void)
         s_enabled,
         (int)s_active
     );
-#if CONFIG_DSP_PEQ_USE_ESP_DSP
-    ESP_LOGI(TAG, "PEQ backend: ESP-DSP stereo block biquad (experimental)");
+#if CONFIG_DSP_PEQ_USE_ESP_DSP_AES3
+    ESP_LOGI(TAG, "PEQ backend: ESP-DSP dual-mono block biquad (AES3 eligible)");
+#elif CONFIG_DSP_PEQ_USE_ESP_DSP
+    ESP_LOGI(TAG, "PEQ backend: ESP-DSP interleaved stereo block biquad");
 #else
     ESP_LOGI(TAG, "PEQ backend: native transposed DF-II");
 #endif
@@ -2182,7 +2193,7 @@ static const uint8_t *dsp_engine_process_internal(
     }
 
 
-#if !CONFIG_DSP_PEQ_USE_ESP_DSP
+#if !CONFIG_DSP_PEQ_USE_ESP_DSP && !CONFIG_DSP_PEQ_USE_ESP_DSP_AES3
     const int16_t *in =
         (const int16_t *)pcm_in;
 #endif
@@ -2195,7 +2206,34 @@ static const uint8_t *dsp_engine_process_internal(
     int16_t *out =
         (int16_t *)(pcm_out ? pcm_out : s_scratch);
 
-#if CONFIG_DSP_PEQ_USE_ESP_DSP
+#if CONFIG_DSP_PEQ_USE_ESP_DSP_AES3
+    if (frames > DSP_PEQ_MAX_FRAMES) {
+        return pcm_in;
+    }
+
+    /* PCM16 -> planar float channels. */
+    const int16_t *pcm_samples = (const int16_t *)pcm_in;
+    const float pcm_scale = 1.0f / 32768.0f;
+    for (size_t frame = 0; frame < frames; ++frame) {
+        s_peq_left[frame] = (float)pcm_samples[frame * 2U] * pcm_scale;
+        s_peq_right[frame] = (float)pcm_samples[frame * 2U + 1U] * pcm_scale;
+    }
+
+    /*
+     * Run each channel through the mono DF-II block kernel. On current
+     * ESP-DSP releases, dsps_biquad_f32 can dispatch to the ESP32-S3 AES3
+     * assembly when CONFIG_DSP_OPTIMIZED selects optimized kernels.
+     */
+    for (uint8_t stage = 0; stage < num_stages; ++stage) {
+        float *coeff = (float *)&coefs[stage];
+        if (dsps_biquad_f32(s_peq_left, s_peq_left, (int)frames,
+                            coeff, s_peq_state[stage][0]) != ESP_OK ||
+            dsps_biquad_f32(s_peq_right, s_peq_right, (int)frames,
+                            coeff, s_peq_state[stage][1]) != ESP_OK) {
+            return pcm_in;
+        }
+    }
+#elif CONFIG_DSP_PEQ_USE_ESP_DSP
     if ((frames * 2U) > DSP_PEQ_MAX_FLOATS) {
         return pcm_in;
     }
@@ -2373,7 +2411,10 @@ static const uint8_t *dsp_engine_process_internal(
         if (interaction_for_stage2)
             current_interaction_scale += interaction_scale_step;
 
-#if CONFIG_DSP_PEQ_USE_ESP_DSP
+#if CONFIG_DSP_PEQ_USE_ESP_DSP_AES3
+        float yl = s_peq_left[i];
+        float yr = s_peq_right[i];
+#elif CONFIG_DSP_PEQ_USE_ESP_DSP
         float yl = s_peq_interleaved[i * 2U];
         float yr = s_peq_interleaved[i * 2U + 1U];
 #else
