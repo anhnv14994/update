@@ -79,6 +79,38 @@ typedef struct {
 } dsp_exciter_t;
 
 /* ============================================================
+ * Analog Character diagnostic bypass masks (session-only)
+ * ============================================================ */
+
+#define DSP_CHARACTER_STAGE_1          (1U << 0)
+#define DSP_CHARACTER_STAGE_2          (1U << 1)
+#define DSP_CHARACTER_STAGE_3          (1U << 2)
+#define DSP_CHARACTER_STAGE_MASK_ALL   (DSP_CHARACTER_STAGE_1 | DSP_CHARACTER_STAGE_2 | DSP_CHARACTER_STAGE_3)
+
+#define DSP_CHARACTER_FEATURE_WARMTH   (1U << 0)
+#define DSP_CHARACTER_FEATURE_DETAIL   (1U << 1)
+#define DSP_CHARACTER_FEATURE_DRIVE    (1U << 2)
+#define DSP_CHARACTER_FEATURE_SOFTNESS (1U << 3)
+#define DSP_CHARACTER_FEATURE_AIR      (1U << 4)
+#define DSP_CHARACTER_FEATURE_MEMORY   (1U << 5)
+#define DSP_CHARACTER_FEATURE_SPECTRAL (1U << 6)
+#define DSP_CHARACTER_FEATURE_MASK_ALL ((1U << 7) - 1U)
+
+typedef struct {
+    uint8_t stage_mask;
+    uint8_t feature_mask;
+    uint32_t blocks;
+    uint32_t stage_avg_us[3];
+    uint32_t stage_max_us[3];
+    uint32_t cpu_mhz;
+} dsp_character_diagnostics_t;
+
+/* Diagnostic masks are volatile and are not written to NVS. */
+esp_err_t dsp_engine_set_character_diagnostics(uint8_t stage_mask,
+                                               uint8_t feature_mask);
+esp_err_t dsp_engine_get_character_diagnostics(dsp_character_diagnostics_t *out);
+
+/* ============================================================
  * Analog Character Engine V4.1
  * Three-stage asymmetric polynomial waveshaper + exact first-order ADAA + state memory.
  * Public structure/API remains V2-compatible; no NVS layout change.
