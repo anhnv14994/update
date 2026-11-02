@@ -2306,7 +2306,7 @@ const uint8_t *dsp_engine_process(
                         /* Conservative density guard: as Drive and band energy
                          * rise, taper nonlinear mix to keep dense passages open. */
                         const float level_norm =
-                            mean_square / (mean_square + 0.010f);
+                            clampf_local(mean_square * 32.0f, 0.0f, 1.0f);
                         const float im_guard = 1.0f -
                             0.10f * cs->drive * level_norm;
 
@@ -2321,7 +2321,7 @@ const uint8_t *dsp_engine_process(
                         if (stage == 1 && (active_stage_mask & DSP_CHARACTER_STAGE_1)) {
                             const float lower_ms = cs->stage[0].mean_square[ch];
                             const float lower_norm =
-                                lower_ms / (lower_ms + 0.004f);
+                                clampf_local(lower_ms * 48.0f, 0.0f, 1.0f);
                             interaction_scale = 1.0f -
                                 0.25f * cs->interaction * lower_norm;
                         }
