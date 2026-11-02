@@ -35,7 +35,7 @@ static const char *TAG = "dsp_engine";
 
 
 #define DSP_CHARACTER_MAGIC   0x43485231u   /* "CHR1" */
-#define DSP_CHARACTER_VERSION 2u
+#define DSP_CHARACTER_VERSION 3u
 #define DSP_NVS_KEY_CHARACTER "character"
 
 
@@ -74,6 +74,25 @@ typedef struct {
     uint32_t          version;
     dsp_character_t   character;
 } dsp_character_blob_t;
+
+/* Exact V5 Lite / Character NVS V2 layout for backward migration. */
+typedef struct {
+    bool enabled;
+    dsp_character_mode_t mode;
+    float warmth_pct;
+    float detail_pct;
+    float drive_pct;
+    float softness_pct;
+    float air_pct;
+    float memory_pct;
+    float spectral_pct;
+} dsp_character_v5_legacy_t;
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    dsp_character_v5_legacy_t character;
+} dsp_character_v5_legacy_blob_t;
 
 /* Exact V3/V2 persisted layout: do not change this migration structure. */
 typedef struct {
@@ -145,8 +164,8 @@ typedef struct {
     biquad_coef_t input_hpf;
     biquad_coef_t input_lpf;
     biquad_coef_t residual_hpf;
-    float env_attack_alpha;
-    float env_release_alpha;
+    float ms_attack_alpha;
+    float ms_release_alpha;
 } character_stage_filter_t;
 
 typedef struct {
@@ -157,11 +176,11 @@ typedef struct {
     biquad_state_t input_hpf[2];
     biquad_state_t input_lpf[2];
     biquad_state_t residual_hpf[2];
-    float envelope[2];
+    float mean_square[2];
     float prev_x[2];
     float prev_even_gain[2];
     float prev_odd_gain[2];
-    float prev_peak[2];
+    float prev_mean_square[2];
     bool adaa_valid[2];
 } character_stage_state_t;
 
@@ -170,6 +189,8 @@ typedef struct {
     float warmth;
     float detail;
     float drive;
+    float interaction;
+    float dynamic_saturation;
     bool running;
 } character_state_t;
 
@@ -618,7 +639,7 @@ static void calc_butterworth_hpf_q(
  */
 static inline float character_adaa_poly_residual(
     float x, float x_prev,
-    float peak, float peak_prev,
+    float mean_square, float mean_square_prev,
     float even_gain, float odd_gain)
 {
     const float p = x_prev;
@@ -626,18 +647,17 @@ static inline float character_adaa_poly_residual(
     const float p2 = p * p;
     const float xp = x * p;
 
-    /* Evaluate only enabled polynomial branches. This makes the Warmth and
-     * Detail A/B switches reduce actual arithmetic, not just output gain. */
+    /* A mean-square detector tracks multi-component audio more consistently
+     * than converting an average-absolute envelope into a sine peak. */
     if (even_gain == 0.0f && odd_gain == 0.0f)
         return 0.0f;
 
-    const float peak_avg = (peak + peak_prev) * 0.5f;
-    const float peak2 = peak_avg * peak_avg;
+    const float ms = fmaxf(0.0f, 0.5f * (mean_square + mean_square_prev));
     float residual = 0.0f;
 
     if (even_gain != 0.0f) {
         const float aa2 = (x2 + xp + p2) * 0.333333333333f;
-        const float h2 = aa2 - 0.5f * peak2;
+        const float h2 = aa2 - ms;
         residual += even_gain * h2;
     }
 
@@ -645,7 +665,7 @@ static inline float character_adaa_poly_residual(
         const float aa3 =
             (x2 * x + x2 * p + x * p2 + p2 * p) * 0.25f;
         const float mid = (x + p) * 0.5f;
-        const float h3 = aa3 - 0.75f * peak2 * mid;
+        const float h3 = aa3 - 1.5f * ms * mid;
         residual += odd_gain * h3;
     }
 
@@ -660,8 +680,8 @@ static void rebuild_character_filters(void)
     /* V5: Stage 1 body (90–650 Hz), Stage 2 vocal core (320 Hz–2.1 kHz). */
     static const float source_hp[CHARACTER_STAGE_COUNT] = { 90.0f, 320.0f };
     static const float source_lp[CHARACTER_STAGE_COUNT] = { 650.0f, 2100.0f };
-    static const float env_attack_ms[CHARACTER_STAGE_COUNT] = { 12.0f, 7.0f };
-    static const float env_release_ms[CHARACTER_STAGE_COUNT] = { 140.0f, 100.0f };
+    static const float ms_attack_ms[CHARACTER_STAGE_COUNT] = { 10.0f, 7.0f };
+    static const float ms_release_ms[CHARACTER_STAGE_COUNT] = { 120.0f, 90.0f };
 
     for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
         calc_butterworth_hpf_q(DSP_SAMPLE_RATE_HZ, source_hp[stage],
@@ -670,10 +690,10 @@ static void rebuild_character_filters(void)
                                0.70710678118f, &next.stage[stage].input_lpf);
         calc_butterworth_hpf_q(DSP_SAMPLE_RATE_HZ, 15.0f,
                                0.70710678118f, &next.stage[stage].residual_hpf);
-        next.stage[stage].env_attack_alpha = 1.0f - expf(
-            -1.0f / (env_attack_ms[stage] * 0.001f * DSP_SAMPLE_RATE_HZ));
-        next.stage[stage].env_release_alpha = 1.0f - expf(
-            -1.0f / (env_release_ms[stage] * 0.001f * DSP_SAMPLE_RATE_HZ));
+        next.stage[stage].ms_attack_alpha = 1.0f - expf(
+            -1.0f / (ms_attack_ms[stage] * 0.001f * DSP_SAMPLE_RATE_HZ));
+        next.stage[stage].ms_release_alpha = 1.0f - expf(
+            -1.0f / (ms_release_ms[stage] * 0.001f * DSP_SAMPLE_RATE_HZ));
     }
 
     if (s_lock)
@@ -703,7 +723,9 @@ static bool character_config_valid(const dsp_character_t *c)
     if (!isfinite(c->warmth_pct) || !isfinite(c->detail_pct) ||
         !isfinite(c->drive_pct) || !isfinite(c->softness_pct) ||
         !isfinite(c->air_pct) || !isfinite(c->memory_pct) ||
-        !isfinite(c->spectral_pct))
+        !isfinite(c->spectral_pct) ||
+        !isfinite(c->harmonic_interaction_pct) ||
+        !isfinite(c->dynamic_saturation_pct))
         return false;
     return c->warmth_pct >= 0.0f && c->warmth_pct <= 100.0f &&
            c->detail_pct >= 0.0f && c->detail_pct <= 100.0f &&
@@ -711,7 +733,11 @@ static bool character_config_valid(const dsp_character_t *c)
            c->softness_pct >= 0.0f && c->softness_pct <= 100.0f &&
            c->air_pct >= 0.0f && c->air_pct <= 100.0f &&
            c->memory_pct >= 0.0f && c->memory_pct <= 100.0f &&
-           c->spectral_pct >= 0.0f && c->spectral_pct <= 100.0f;
+           c->spectral_pct >= 0.0f && c->spectral_pct <= 100.0f &&
+           c->harmonic_interaction_pct >= 0.0f &&
+           c->harmonic_interaction_pct <= 100.0f &&
+           c->dynamic_saturation_pct >= 0.0f &&
+           c->dynamic_saturation_pct <= 100.0f;
 }
 
 static void character_profile_defaults(dsp_character_mode_t mode,
@@ -759,6 +785,40 @@ static esp_err_t load_character_from_nvs(nvs_handle_t nvs)
             s_character.spectral_pct = 0.0f;
             return ESP_OK;
         }
+    } else if (len == sizeof(dsp_character_v5_legacy_blob_t)) {
+        dsp_character_v5_legacy_blob_t old_blob;
+        size_t read_len = sizeof(old_blob);
+        err = nvs_get_blob(nvs, DSP_NVS_KEY_CHARACTER, &old_blob, &read_len);
+        if (err == ESP_OK && read_len == sizeof(old_blob) &&
+            old_blob.magic == DSP_CHARACTER_MAGIC && old_blob.version == 2u) {
+            memset(&s_character, 0, sizeof(s_character));
+            s_character.enabled = old_blob.character.enabled;
+            s_character.mode = old_blob.character.mode;
+            s_character.warmth_pct = old_blob.character.warmth_pct;
+            s_character.detail_pct = old_blob.character.detail_pct;
+            s_character.drive_pct = old_blob.character.drive_pct;
+            s_character.softness_pct = 0.0f;
+            s_character.air_pct = 0.0f;
+            s_character.memory_pct = 0.0f;
+            s_character.spectral_pct = 0.0f;
+            /* V5.1 additions default OFF, preserving the old V5 Lite sound. */
+            s_character.harmonic_interaction_enabled = false;
+            s_character.harmonic_interaction_pct = 0.0f;
+            s_character.dynamic_saturation_enabled = false;
+            s_character.dynamic_saturation_pct = 0.0f;
+
+            if (character_config_valid(&s_character)) {
+                dsp_character_blob_t migrated = {
+                    .magic = DSP_CHARACTER_MAGIC,
+                    .version = DSP_CHARACTER_VERSION,
+                    .character = s_character
+                };
+                (void)nvs_set_blob(nvs, DSP_NVS_KEY_CHARACTER,
+                                   &migrated, sizeof(migrated));
+                ESP_LOGI(TAG, "Character V5 Lite NVS V2 migrated to V5.1 Lite");
+                return ESP_OK;
+            }
+        }
     } else if (len == sizeof(dsp_character_v3_legacy_blob_t)) {
         dsp_character_v3_legacy_blob_t old_blob;
         size_t read_len = sizeof(old_blob);
@@ -771,11 +831,14 @@ static esp_err_t load_character_from_nvs(nvs_handle_t nvs)
             s_character.warmth_pct = old_blob.character.warmth_pct;
             s_character.detail_pct = old_blob.character.detail_pct;
             s_character.drive_pct = old_blob.character.drive_pct;
-            /* V5 keeps the old NVS layout but ignores V4-only controls. */
             s_character.softness_pct = 0.0f;
             s_character.air_pct = 0.0f;
             s_character.memory_pct = 0.0f;
             s_character.spectral_pct = 0.0f;
+            s_character.harmonic_interaction_enabled = false;
+            s_character.harmonic_interaction_pct = 0.0f;
+            s_character.dynamic_saturation_enabled = false;
+            s_character.dynamic_saturation_pct = 0.0f;
             if (character_config_valid(&s_character)) {
                 dsp_character_blob_t migrated = {
                     .magic = DSP_CHARACTER_MAGIC,
@@ -784,7 +847,7 @@ static esp_err_t load_character_from_nvs(nvs_handle_t nvs)
                 };
                 (void)nvs_set_blob(nvs, DSP_NVS_KEY_CHARACTER,
                                    &migrated, sizeof(migrated));
-                ESP_LOGI(TAG, "Character V3 NVS migrated to V5 Lite defaults");
+                ESP_LOGI(TAG, "Character V3 NVS migrated to V5.1 Lite defaults");
                 return ESP_OK;
             }
         }
@@ -2131,15 +2194,14 @@ const uint8_t *dsp_engine_process(
 
         /*
          * ----------------------------------------------------
-         * Analog Character V5 Lite — two-stage parallel model
+         * Analog Character V5.1 Lite — two-stage parallel model
          * ----------------------------------------------------
-         * Stage 1: 90–650 Hz, H2 only.
-         * Stage 2: 320 Hz–2.1 kHz, H2 + optional H3.
+         * Stage 1: 90–650 Hz, H2 body.
+         * Stage 2: 320 Hz–2.1 kHz, H2 + controllable H3.
          *
-         * Kept in the real-time path: two biquads for band shaping,
-         * one envelope follower, polynomial ADAA and one residual HPF
-         * per active channel. Memory/charge/coupling/supply branches
-         * and the separate bass exciter are intentionally removed.
+         * Harmonic Interaction coordinates Stage 2 against Stage 1 energy.
+         * Dynamic Saturation adds a bounded level-dependent harmonic mix.
+         * Both controls are optional; no extra nonlinear/filter stage is added.
          */
         {
             character_state_t *cs = &s_character_state;
@@ -2154,10 +2216,19 @@ const uint8_t *dsp_engine_process(
             const float target_drive =
                 (character_enabled && diag_drive)
                 ? character.drive_pct * 0.01f : 0.0f;
+            const float target_interaction =
+                (character_enabled && character.harmonic_interaction_enabled)
+                ? character.harmonic_interaction_pct * 0.01f : 0.0f;
+            const float target_dynamic =
+                (character_enabled && character.dynamic_saturation_enabled)
+                ? character.dynamic_saturation_pct * 0.01f : 0.0f;
 
             cs->warmth += smooth * (target_warmth - cs->warmth);
             cs->detail += smooth * (target_detail - cs->detail);
             cs->drive += smooth * (target_drive - cs->drive);
+            cs->interaction += smooth * (target_interaction - cs->interaction);
+            cs->dynamic_saturation += smooth *
+                (target_dynamic - cs->dynamic_saturation);
 
             const float drive = diag_drive
                 ? (0.90f + 1.90f * cs->drive) : 1.0f;
@@ -2174,10 +2245,12 @@ const uint8_t *dsp_engine_process(
                 0.190f * cs->warmth * drive * asymmetry[0],
                 0.105f * cs->warmth * drive * asymmetry[1]
             };
+            /* Less quadratic Detail curve: useful H3 at moderate settings,
+             * capped at ~3.6x the old maximum coefficient. */
             const float h3_gain[CHARACTER_STAGE_COUNT] = {
                 0.0f,
-                0.075f * cs->detail * drive *
-                    (0.075f + 0.11f * cs->detail)
+                0.050f * cs->detail * drive *
+                    (0.70f + 0.30f * cs->detail)
             };
 
             uint8_t active_stage_mask = 0;
@@ -2220,35 +2293,61 @@ const uint8_t *dsp_engine_process(
                         band = biquad_process_sample(
                             band, &fc->input_lpf, &ss->input_lpf[ch]);
 
-                        const float abs_band = fabsf(band);
-                        const float env_alpha = (abs_band > ss->envelope[ch])
-                            ? fc->env_attack_alpha : fc->env_release_alpha;
-                        ss->envelope[ch] += env_alpha *
-                            (abs_band - ss->envelope[ch]);
+                        const float band_power = band * band;
+                        const float ms_alpha = (band_power > ss->mean_square[ch])
+                            ? fc->ms_attack_alpha : fc->ms_release_alpha;
+                        ss->mean_square[ch] += ms_alpha *
+                            (band_power - ss->mean_square[ch]);
+                        const float mean_square = fmaxf(0.0f, ss->mean_square[ch]);
 
-                        const float peak = clampf_local(
-                            ss->envelope[ch] * 1.57079632679f, 0.0f, 0.95f);
-                        const float even_gain = h2_gain[stage];
-                        const float odd_gain = h3_gain[stage];
+                        float even_gain = h2_gain[stage];
+                        float odd_gain = h3_gain[stage];
+
+                        /* Conservative density guard: as Drive and band energy
+                         * rise, taper nonlinear mix to keep dense passages open. */
+                        const float level_norm =
+                            mean_square / (mean_square + 0.010f);
+                        const float im_guard = 1.0f -
+                            0.10f * cs->drive * level_norm;
+
+                        /* Level-dependent saturation changes only harmonic
+                         * coefficients; it does not compress the dry signal. */
+                        const float dynamic_scale = 1.0f +
+                            0.20f * cs->dynamic_saturation * level_norm;
+
+                        /* Stage 1 energy gently relaxes Stage 2 in the shared
+                         * 320–650 Hz region, limiting low-mid harmonic buildup. */
+                        float interaction_scale = 1.0f;
+                        if (stage == 1 && (active_stage_mask & DSP_CHARACTER_STAGE_1)) {
+                            const float lower_ms = cs->stage[0].mean_square[ch];
+                            const float lower_norm =
+                                lower_ms / (lower_ms + 0.004f);
+                            interaction_scale = 1.0f -
+                                0.25f * cs->interaction * lower_norm;
+                        }
+
+                        const float harmonic_scale = clampf_local(
+                            im_guard * dynamic_scale * interaction_scale,
+                            0.65f, 1.25f);
+                        even_gain *= harmonic_scale;
+                        odd_gain *= harmonic_scale;
 
                         float residual;
                         if (ss->adaa_valid[ch]) {
                             residual = character_adaa_poly_residual(
                                 band, ss->prev_x[ch],
-                                peak, ss->prev_peak[ch],
+                                mean_square, ss->prev_mean_square[ch],
                                 0.5f * (even_gain + ss->prev_even_gain[ch]),
                                 0.5f * (odd_gain + ss->prev_odd_gain[ch]));
                         } else {
-                            const float peak2 = peak * peak;
                             residual = 0.0f;
                             if (even_gain != 0.0f) {
                                 residual += even_gain *
-                                    (band * band - 0.5f * peak2);
+                                    (band * band - mean_square);
                             }
                             if (odd_gain != 0.0f) {
                                 residual += odd_gain *
-                                    (band * band * band -
-                                     0.75f * peak2 * band);
+                                    (band * band * band - 1.5f * mean_square * band);
                             }
                             ss->adaa_valid[ch] = true;
                         }
@@ -2256,7 +2355,7 @@ const uint8_t *dsp_engine_process(
                         ss->prev_x[ch] = band;
                         ss->prev_even_gain[ch] = even_gain;
                         ss->prev_odd_gain[ch] = odd_gain;
-                        ss->prev_peak[ch] = peak;
+                        ss->prev_mean_square[ch] = mean_square;
 
                         residual = biquad_process_sample(
                             residual, &fc->residual_hpf, &ss->residual_hpf[ch]);
