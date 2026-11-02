@@ -2245,7 +2245,7 @@ const uint8_t *dsp_engine_process(
              * ~3.6x the V5 Lite maximum; moderate settings become useful. */
             const float h3_gain[CHARACTER_STAGE_COUNT] = {
                 0.0f,
-                0.140f * cs->detail * drive
+                0.050f * cs->detail * drive
             };
 
             uint8_t active_stage_mask = 0;
