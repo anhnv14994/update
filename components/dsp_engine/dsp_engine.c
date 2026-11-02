@@ -609,8 +609,8 @@ static void calc_butterworth_hpf_q(
 
  * Each stage uses a band-limited source and an asymmetric quadratic/cubic
  * transfer. First-order ADAA is evaluated in closed form: no LUT access,
- * logarithm, or per-sample division. Slow bias/coupling/supply states provide
- * memory; no audio-rate sample feedback is used.
+ * logarithm, or per-sample division. A lightweight envelope follower adds
+ * level-dependent harmonic shaping; V4 memory/supply branches are removed.
  *
  * For f(x)=a2*x^2+a3*x^3, the exact first-order ADAA interval averages are:
  *   AA2 = (x^2 + x*p + p^2) / 3
@@ -771,10 +771,11 @@ static esp_err_t load_character_from_nvs(nvs_handle_t nvs)
             s_character.warmth_pct = old_blob.character.warmth_pct;
             s_character.detail_pct = old_blob.character.detail_pct;
             s_character.drive_pct = old_blob.character.drive_pct;
-            s_character.softness_pct = old_blob.character.softness_pct;
-            s_character.air_pct = old_blob.character.air_pct;
-            s_character.memory_pct = 45.0f;
-            s_character.spectral_pct = 50.0f;
+            /* V5 keeps the old NVS layout but ignores V4-only controls. */
+            s_character.softness_pct = 0.0f;
+            s_character.air_pct = 0.0f;
+            s_character.memory_pct = 0.0f;
+            s_character.spectral_pct = 0.0f;
             if (character_config_valid(&s_character)) {
                 dsp_character_blob_t migrated = {
                     .magic = DSP_CHARACTER_MAGIC,
@@ -783,7 +784,7 @@ static esp_err_t load_character_from_nvs(nvs_handle_t nvs)
                 };
                 (void)nvs_set_blob(nvs, DSP_NVS_KEY_CHARACTER,
                                    &migrated, sizeof(migrated));
-                ESP_LOGI(TAG, "Character V3 NVS migrated to V4.1 defaults");
+                ESP_LOGI(TAG, "Character V3 NVS migrated to V5 Lite defaults");
                 return ESP_OK;
             }
         }
@@ -1788,7 +1789,7 @@ esp_err_t dsp_engine_reset_preset(
 
     /*
      * Only reset this preset.
-     * Exciter is intentionally untouched.
+     * Analog Character settings are intentionally untouched.
      */
 
     return dsp_engine_save_preset(id);
