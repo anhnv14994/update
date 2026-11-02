@@ -90,6 +90,20 @@ typedef enum {
     DSP_CHARACTER_BRITISH = 2  /* B: natural / open / restrained */
 } dsp_character_mode_t;
 
+#define DSP_CHARACTER_STAGE_1       (1u << 0)
+#define DSP_CHARACTER_STAGE_2       (1u << 1)
+#define DSP_CHARACTER_STAGE_3       (1u << 2)
+#define DSP_CHARACTER_STAGE_ALL     (DSP_CHARACTER_STAGE_1 | DSP_CHARACTER_STAGE_2 | DSP_CHARACTER_STAGE_3)
+
+#define DSP_CHARACTER_FEATURE_WARMTH   (1u << 0)
+#define DSP_CHARACTER_FEATURE_DETAIL   (1u << 1)
+#define DSP_CHARACTER_FEATURE_DRIVE    (1u << 2)
+#define DSP_CHARACTER_FEATURE_SOFTNESS (1u << 3)
+#define DSP_CHARACTER_FEATURE_AIR      (1u << 4)
+#define DSP_CHARACTER_FEATURE_MEMORY  (1u << 5)
+#define DSP_CHARACTER_FEATURE_SPECTRAL (1u << 6)
+#define DSP_CHARACTER_FEATURE_ALL      0x7Fu
+
 typedef struct {
     bool enabled;
     dsp_character_mode_t mode;
@@ -99,7 +113,9 @@ typedef struct {
     float softness_pct; /* 0..100: backs off harmonics on loud peaks */
     float air_pct;      /* 0..100: high-frequency shelf, up to +1.5 dB */
     float memory_pct;   /* 0..100: bias/coupling/shared-supply memory depth */
-    float spectral_pct;/* 0..100: low-to-upper-stage saturation balance */
+    float spectral_pct; /* 0..100: low-to-upper-stage saturation balance */
+    uint8_t stage_mask;   /* independent Stage 1..3 diagnostic switches */
+    uint8_t feature_mask; /* independent Warmth..Spectral diagnostic switches */
 } dsp_character_t;
 
 /* ============================================================
