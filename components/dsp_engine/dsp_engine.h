@@ -134,6 +134,9 @@ const uint8_t *dsp_engine_process(const uint8_t *pcm_in,
                                   size_t len_bytes,
                                   size_t *out_len);
 
+/* In-place variant for writable real-time pipeline frames; no scratch copy. */
+void dsp_engine_process_inplace(uint8_t *pcm, size_t len_bytes);
+
 /* ============================================================
  * DSP enable
  * ============================================================ */

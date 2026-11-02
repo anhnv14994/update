@@ -2038,8 +2038,9 @@ esp_err_t dsp_engine_get_character_diagnostics(dsp_character_diagnostics_t *out)
  * Audio processing
  * ============================================================ */
 
-const uint8_t *dsp_engine_process(
+static const uint8_t *dsp_engine_process_internal(
     const uint8_t *pcm_in,
+    uint8_t *pcm_out,
     size_t len_bytes,
     size_t *out_len)
 {
@@ -2150,7 +2151,7 @@ const uint8_t *dsp_engine_process(
      * Scratch buffer.
      */
 
-    if (!s_scratch || required > s_scratch_len) {
+    if (!pcm_out && (!s_scratch || required > s_scratch_len)) {
         ESP_LOGE(
             TAG,
             "PCM frame exceeds preallocated DSP scratch: %u > %u",
@@ -2165,8 +2166,13 @@ const uint8_t *dsp_engine_process(
         (const int16_t *)pcm_in;
 
 
+    /*
+     * Phase 2: the pipeline tap may supply its DSP-ring frame as the
+     * destination. In-place operation removes the scratch-to-frame copy.
+     * The legacy API still uses s_scratch and keeps its original semantics.
+     */
     int16_t *out =
-        (int16_t *)s_scratch;
+        (int16_t *)(pcm_out ? pcm_out : s_scratch);
 
 
     /*
@@ -2613,5 +2619,25 @@ const uint8_t *dsp_engine_process(
     }
 #endif
 
-    return s_scratch;
+    return pcm_out ? pcm_out : s_scratch;
+}
+
+/* Compatibility API: retain the original non-mutating scratch-buffer path. */
+const uint8_t *dsp_engine_process(
+    const uint8_t *pcm_in,
+    size_t len_bytes,
+    size_t *out_len)
+{
+    return dsp_engine_process_internal(
+        pcm_in, NULL, len_bytes, out_len);
+}
+
+/* Real-time pipeline API: process the writable DSP-ring frame in-place. */
+void dsp_engine_process_inplace(
+    uint8_t *pcm,
+    size_t len_bytes)
+{
+    size_t out_len = len_bytes;
+    (void)dsp_engine_process_internal(
+        pcm, pcm, len_bytes, &out_len);
 }

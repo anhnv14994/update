@@ -44,32 +44,13 @@ static void dsp_pcm_callback(
 {
     (void)user_ctx;
 
-    size_t out_len = len;
-
-    const uint8_t *processed =
-        dsp_engine_process(
-            data,
-            len,
-            &out_len);
-
-    if (!processed)
-        return;
-
     /*
-     * dsp_engine_process() thường trả về s_scratch.
-     * Copy PCM đã xử lý ngược vào DSP frame.
-     *
-     * audio_buffer truyền frame->data vào callback.
-     * Buffer thực tế là writable dù API khai báo const.
+     * audio_buffer passes the writable DSP-ring frame here.
+     * Process it directly: no scratch-to-frame memcpy on the hot path.
+     * The callback type is const for API compatibility with older users.
      */
-    if (processed != data &&
-        out_len > 0 &&
-        out_len <= len) {
-
-        memcpy(
-            (void *)data,
-            processed,
-            out_len);
+    if (data && len >= 4) {
+        dsp_engine_process_inplace((uint8_t *)data, len);
     }
 }
 
