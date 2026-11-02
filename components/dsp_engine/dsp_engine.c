@@ -2299,10 +2299,9 @@ const uint8_t *dsp_engine_process(
     for (size_t i = 0;
          i < frames;
          i++) {
-        for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
-            current_h2_gain[stage] += h2_gain_step[stage];
-            current_h3_gain[stage] += h3_gain_step[stage];
-        }
+        current_h2_gain[0] += h2_gain_step[0];
+        current_h2_gain[1] += h2_gain_step[1];
+        current_h3_gain[1] += h3_gain_step[1];
         current_im_guard += im_guard_step;
         if (dynamic_active)
             current_dynamic_scale += dynamic_scale_step;
