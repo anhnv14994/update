@@ -335,6 +335,9 @@ static _Atomic uint32_t s_character_diag_frames;
 static _Atomic uint32_t s_character_diag_total_cycles;
 static _Atomic uint32_t s_character_diag_stage_cycles[CHARACTER_STAGE_COUNT];
 static _Atomic uint32_t s_character_diag_stage_max_cycles[CHARACTER_STAGE_COUNT];
+/* Additional per-block measurements: PEQ, Exciter, Master/Limiter. */
+static _Atomic uint32_t s_dsp_diag_block_cycles[3];
+static _Atomic uint32_t s_dsp_diag_block_max_cycles[3];
 static uint32_t s_character_diag_last_log_ms;
 
 
@@ -2815,6 +2818,7 @@ const uint8_t *dsp_engine_process(
 
     uint32_t character_stage_cycles[CHARACTER_STAGE_COUNT] = {0};
     uint32_t character_total_cycles = 0;
+    uint32_t dsp_block_cycles[3] = {0}; /* PEQ, Exciter, Master/Limiter */
 
     for (size_t i = 0;
          i < frames;
@@ -2843,6 +2847,7 @@ const uint8_t *dsp_engine_process(
             r;
 
 
+        const uint32_t peq_start_cycles = esp_cpu_get_cycle_count();
         for (uint8_t stage = 0;
              stage < num_stages;
              stage++) {
@@ -2874,7 +2879,8 @@ const uint8_t *dsp_engine_process(
                     &s_state[stage][1]
                 );
         }
-
+        dsp_block_cycles[0] +=
+            esp_cpu_get_cycle_count() - peq_start_cycles;
 
         /*
          * ----------------------------------------------------
@@ -3164,6 +3170,7 @@ const uint8_t *dsp_engine_process(
         character_total_cycles +=
             esp_cpu_get_cycle_count() - character_sample_start_cycles;
 
+        const uint32_t exciter_start_cycles = esp_cpu_get_cycle_count();
         /*
          * ----------------------------------------------------
          * Bass Harmonic Exciter
@@ -3373,10 +3380,11 @@ const uint8_t *dsp_engine_process(
             yr +=
                 harmonic;
         }
+        dsp_block_cycles[1] +=
+            esp_cpu_get_cycle_count() - exciter_start_cycles;
 
 
-
-
+        const uint32_t master_start_cycles = esp_cpu_get_cycle_count();
         /*
          * ----------------------------------------------------
          * Master
@@ -3427,6 +3435,9 @@ const uint8_t *dsp_engine_process(
             (int16_t)(
                 yr * 32768.0f
             );
+
+        dsp_block_cycles[2] +=
+            esp_cpu_get_cycle_count() - master_start_cycles;
     }
 
 
@@ -3480,19 +3491,56 @@ const uint8_t *dsp_engine_process(
                     0, memory_order_relaxed);
             }
 
+            uint32_t block_avg_us[3];
+            uint32_t block_max_us[3];
+            for (unsigned block = 0; block < 3; ++block) {
+                const uint32_t sum = atomic_exchange_explicit(
+                    &s_dsp_diag_block_cycles[block], 0, memory_order_relaxed);
+                const uint32_t max_cycles = atomic_exchange_explicit(
+                    &s_dsp_diag_block_max_cycles[block], 0, memory_order_relaxed);
+                block_avg_us[block] = (uint32_t)(
+                    (float)sum / (cpu_mhz * (float)count));
+                block_max_us[block] = (uint32_t)(
+                    (float)max_cycles / cpu_mhz);
+            }
+
             ESP_LOGI(TAG,
-                "Character diag %u frames: total_avg=%.1fus "
-                "S1=%.1f/%.1f S2=%.1f/%.1f S3=%.1f/%.1fus "
-                "(avg/max per 352-sample frame)",
-                count, total_avg_us,
-                (float)stage_sum[0] / (cpu_mhz * (float)count),
-                (float)stage_max[0] / cpu_mhz,
-                (float)stage_sum[1] / (cpu_mhz * (float)count),
-                (float)stage_max[1] / cpu_mhz,
-                (float)stage_sum[2] / (cpu_mhz * (float)count),
-                (float)stage_max[2] / cpu_mhz);
+                "DSP diag %u frames: PEQ=%u/%u Exciter=%u/%u "
+                "Character=%u S1=%u/%u S2=%u/%u S3=%u/%u "
+                "Master=%u/%u us (avg/max per frame)",
+                count,
+                block_avg_us[0], block_max_us[0],
+                block_avg_us[1], block_max_us[1],
+                (uint32_t)total_avg_us,
+                (uint32_t)((float)stage_sum[0] / (cpu_mhz * (float)count)),
+                (uint32_t)((float)stage_max[0] / cpu_mhz),
+                (uint32_t)((float)stage_sum[1] / (cpu_mhz * (float)count)),
+                (uint32_t)((float)stage_max[1] / cpu_mhz),
+                (uint32_t)((float)stage_sum[2] / (cpu_mhz * (float)count)),
+                (uint32_t)((float)stage_max[2] / cpu_mhz),
+                block_avg_us[2], block_max_us[2]);
         }
         s_character_diag_last_log_ms = now_ms;
+    }
+
+    static const char *block_names[3] = {"PEQ", "Exciter", "Master"};
+    for (unsigned block = 0; block < 3; ++block) {
+        atomic_fetch_add_explicit(
+            &s_dsp_diag_block_cycles[block],
+            dsp_block_cycles[block],
+            memory_order_relaxed);
+
+        uint32_t prev_max = atomic_load_explicit(
+            &s_dsp_diag_block_max_cycles[block],
+            memory_order_relaxed);
+        while (dsp_block_cycles[block] > prev_max &&
+               !atomic_compare_exchange_weak_explicit(
+                   &s_dsp_diag_block_max_cycles[block],
+                   &prev_max,
+                   dsp_block_cycles[block],
+                   memory_order_relaxed,
+                   memory_order_relaxed)) {
+        }
     }
 
     (void)diag_frames;
