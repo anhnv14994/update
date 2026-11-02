@@ -254,6 +254,14 @@ static cJSON *build_state_json(void)
         cJSON_AddNumberToObject(ch, "air_pct", character.air_pct);
         cJSON_AddNumberToObject(ch, "memory_pct", character.memory_pct);
         cJSON_AddNumberToObject(ch, "spectral_pct", character.spectral_pct);
+        cJSON_AddBoolToObject(ch, "harmonic_interaction_enabled",
+                              character.harmonic_interaction_enabled);
+        cJSON_AddNumberToObject(ch, "harmonic_interaction_pct",
+                                character.harmonic_interaction_pct);
+        cJSON_AddBoolToObject(ch, "dynamic_saturation_enabled",
+                              character.dynamic_saturation_enabled);
+        cJSON_AddNumberToObject(ch, "dynamic_saturation_pct",
+                                character.dynamic_saturation_pct);
         cJSON_AddItemToObject(root, "character", ch);
     }
 
@@ -589,7 +597,7 @@ static esp_err_t api_character_diag_handler(httpd_req_t *req)
 
 static esp_err_t api_character_handler(httpd_req_t *req)
 {
-    char buf[384];
+    char buf[512];
     cJSON *body = parse_request_json(req, buf, sizeof(buf));
     if (!body)
         return send_error_json(req, 400, "invalid or empty json");
@@ -633,6 +641,20 @@ static esp_err_t api_character_handler(httpd_req_t *req)
     if (v && cJSON_IsNumber(v)) current.detail_pct = (float)v->valuedouble;
     v = cJSON_GetObjectItem(body, "drive_pct");
     if (v && cJSON_IsNumber(v)) current.drive_pct = (float)v->valuedouble;
+
+    v = cJSON_GetObjectItem(body, "harmonic_interaction_enabled");
+    if (v && cJSON_IsBool(v))
+        current.harmonic_interaction_enabled = cJSON_IsTrue(v);
+    v = cJSON_GetObjectItem(body, "harmonic_interaction_pct");
+    if (v && cJSON_IsNumber(v))
+        current.harmonic_interaction_pct = (float)v->valuedouble;
+
+    v = cJSON_GetObjectItem(body, "dynamic_saturation_enabled");
+    if (v && cJSON_IsBool(v))
+        current.dynamic_saturation_enabled = cJSON_IsTrue(v);
+    v = cJSON_GetObjectItem(body, "dynamic_saturation_pct");
+    if (v && cJSON_IsNumber(v))
+        current.dynamic_saturation_pct = (float)v->valuedouble;
 
     cJSON_Delete(body);
 
