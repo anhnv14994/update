@@ -1,0 +1,11 @@
+menu "DSP Engine"
+
+config DSP_CHARACTER_PROFILE
+    bool "Enable Analog Character per-stage cycle profiling"
+    default n
+    help
+        Enable per-stage cycle-counter instrumentation for Character DSP.
+        This adds cycle-counter reads inside the sample loop and is intended
+        only for profiling builds. Keep disabled for normal playback.
+
+endmenu
