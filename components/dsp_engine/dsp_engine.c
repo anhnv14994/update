@@ -4,6 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdatomic.h>
+
+#include "esp_cpu.h"
+#include "sdkconfig.h"
 
 #include "esp_log.h"
 #include "nvs.h"
@@ -305,6 +309,17 @@ typedef struct {
 
 static character_filter_coef_t s_character_filters;
 static character_state_t s_character_state;
+
+/* Runtime-only diagnostic switches; deliberately excluded from NVS. */
+static _Atomic uint32_t s_character_diag_stage_mask = DSP_CHARACTER_STAGE_MASK_ALL;
+static _Atomic uint32_t s_character_diag_feature_mask = DSP_CHARACTER_FEATURE_MASK_ALL;
+static _Atomic uint32_t s_character_diag_blocks = 0;
+static _Atomic uint32_t s_character_diag_stage_total_us[CHARACTER_STAGE_COUNT] = {0};
+static _Atomic uint32_t s_character_diag_stage_max_us[CHARACTER_STAGE_COUNT] = {0};
+
+/* Audio-task-owned state used to clear stale histories after a test bypass. */
+static uint8_t s_character_active_stage_mask = 0;
+static bool s_character_memory_feature_active = true;
 
 
 /* ============================================================
@@ -923,6 +938,8 @@ static void reset_character_states(void)
 {
     memset(&s_character_state, 0, sizeof(s_character_state));
     s_character_state.drive = 0.0f;
+    s_character_active_stage_mask = 0;
+    s_character_memory_feature_active = false;
 }
 
 static void set_character_factory(void)
@@ -2701,6 +2718,33 @@ const uint8_t *dsp_engine_process(
     }
 
 
+    const uint32_t diag_stage_mask =
+        atomic_load_explicit(&s_character_diag_stage_mask, memory_order_relaxed) &
+        DSP_CHARACTER_STAGE_MASK_ALL;
+    const uint32_t diag_feature_mask =
+        atomic_load_explicit(&s_character_diag_feature_mask, memory_order_relaxed) &
+        DSP_CHARACTER_FEATURE_MASK_ALL;
+
+    const bool diag_warmth = (diag_feature_mask & DSP_CHARACTER_FEATURE_WARMTH) != 0;
+    const bool diag_detail = (diag_feature_mask & DSP_CHARACTER_FEATURE_DETAIL) != 0;
+    const bool diag_drive = (diag_feature_mask & DSP_CHARACTER_FEATURE_DRIVE) != 0;
+    const bool diag_softness = (diag_feature_mask & DSP_CHARACTER_FEATURE_SOFTNESS) != 0;
+    const bool diag_air = (diag_feature_mask & DSP_CHARACTER_FEATURE_AIR) != 0;
+    const bool diag_memory = (diag_feature_mask & DSP_CHARACTER_FEATURE_MEMORY) != 0;
+    const bool diag_spectral = (diag_feature_mask & DSP_CHARACTER_FEATURE_SPECTRAL) != 0;
+
+    /* Clear memory-only state once when its diagnostic path is bypassed. */
+    if (s_character_memory_feature_active && !diag_memory) {
+        for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+            character_stage_state_t *ss = &s_character_state.stage[stage];
+            memset(ss->charge, 0, sizeof(ss->charge));
+            memset(ss->coupling, 0, sizeof(ss->coupling));
+            memset(ss->bias, 0, sizeof(ss->bias));
+        }
+        s_character_state.supply_envelope = 0.0f;
+    }
+    s_character_memory_feature_active = diag_memory;
+
     const size_t frames =
         len_bytes / 4;
 
@@ -2743,6 +2787,9 @@ const uint8_t *dsp_engine_process(
 
     const float character_control_smooth = 1.0f - expf(
         -1.0f / (0.012f * DSP_SAMPLE_RATE_HZ));
+
+    /* Per-call profiling: cycle-counter reads are much lighter than timers. */
+    uint32_t character_stage_cycles[CHARACTER_STAGE_COUNT] = {0};
 
     for (size_t i = 0;
          i < frames;
@@ -2817,13 +2864,21 @@ const uint8_t *dsp_engine_process(
             character_state_t *cs = &s_character_state;
             const float smooth = character_control_smooth;
 
-            const float tw = character_enabled ? character.warmth_pct * 0.01f : 0.0f;
-            const float td = character_enabled ? character.detail_pct * 0.01f : 0.0f;
-            const float tr = character_enabled ? character.drive_pct * 0.01f : 0.0f;
-            const float ts = character_enabled ? character.softness_pct * 0.01f : 0.0f;
-            const float tm = character_enabled ? character.memory_pct * 0.01f : 0.0f;
-            const float tsp = character_enabled ? character.spectral_pct * 0.01f : 0.0f;
-            const float ta = character_enabled
+
+            const float tw = (character_enabled && diag_warmth)
+                ? character.warmth_pct * 0.01f : 0.0f;
+            const float td = (character_enabled && diag_detail)
+                ? character.detail_pct * 0.01f : 0.0f;
+            const float tr = (character_enabled && diag_drive)
+                ? character.drive_pct * 0.01f : 0.0f;
+            const float ts = (character_enabled && diag_softness)
+                ? character.softness_pct * 0.01f : 0.0f;
+            const float tm = (character_enabled && diag_memory)
+                ? character.memory_pct * 0.01f : 0.0f;
+            /* 50% is the neutral stage-balance point when Spectral is bypassed. */
+            const float tsp = (character_enabled && diag_spectral)
+                ? character.spectral_pct * 0.01f : 0.5f;
+            const float ta = (character_enabled && diag_air)
                 ? (db_to_linear(character.air_pct * 0.015f) - 1.0f) : 0.0f;
 
             cs->warmth += smooth * (tw - cs->warmth);
@@ -2834,32 +2889,41 @@ const uint8_t *dsp_engine_process(
             cs->spectral += smooth * (tsp - cs->spectral);
             cs->air_gain += smooth * (ta - cs->air_gain);
 
-            const bool character_mix_active =
+            const bool nonlinear_control_active =
                 (cs->warmth > 0.00002f) ||
-                (cs->detail > 0.00002f) ||
-                (fabsf(cs->air_gain) > 0.000002f);
+                (cs->detail > 0.00002f);
+            const bool air_control_active =
+                fabsf(cs->air_gain) > 0.000002f;
+            const bool character_mix_active =
+                ((diag_stage_mask != 0) && nonlinear_control_active) ||
+                air_control_active;
 
-            /* Do not run the nonlinear network when Character is enabled
-             * with all audible controls at zero. This avoids wasting the DSP
-             * budget if a web UI has reset its slider values. */
+            /* Do not run the nonlinear network if it cannot contribute audio. */
             if (character_mix_active || cs->running) {
-                /* Stereo-linked slow supply memory. Both channels receive the
-                 * same sag coefficient so the phantom centre cannot wander. */
-                const float program_level = 0.5f * (fabsf(yl) + fabsf(yr));
-                const float supply_alpha =
-                    (program_level > cs->supply_envelope)
-                    ? character_filters.supply_attack_alpha
-                    : character_filters.supply_release_alpha;
-                cs->supply_envelope += supply_alpha *
-                    (program_level - cs->supply_envelope);
-                const float supply_level = clampf_local(
-                    (cs->supply_envelope - 0.025f) / 0.20f, 0.0f, 1.0f);
-                const float supply_sag = 0.055f * cs->memory *
-                    (0.35f + 0.65f * cs->softness) * supply_level;
-                const float common_drive =
-                    (0.90f + 1.90f * cs->drive) * (1.0f - supply_sag);
+                const bool memory_active = diag_memory && (cs->memory > 0.00001f);
 
-                const float spectral = cs->spectral;
+                float supply_level = 0.0f;
+                if (memory_active) {
+                    const float program_level = 0.5f * (fabsf(yl) + fabsf(yr));
+                    const float supply_alpha =
+                        (program_level > cs->supply_envelope)
+                        ? character_filters.supply_attack_alpha
+                        : character_filters.supply_release_alpha;
+                    cs->supply_envelope += supply_alpha *
+                        (program_level - cs->supply_envelope);
+                    supply_level = clampf_local(
+                        (cs->supply_envelope - 0.025f) / 0.20f, 0.0f, 1.0f);
+                }
+
+                const float supply_sag = memory_active
+                    ? 0.055f * cs->memory *
+                        (0.35f + 0.65f * cs->softness) * supply_level
+                    : 0.0f;
+                const float common_drive = diag_drive
+                    ? (0.90f + 1.90f * cs->drive) * (1.0f - supply_sag)
+                    : 1.0f;
+
+                const float spectral = diag_spectral ? cs->spectral : 0.5f;
                 const float stage_mix[CHARACTER_STAGE_COUNT] = {
                     0.190f * cs->warmth * (1.15f - 0.30f * spectral),
                     (0.105f * cs->warmth + 0.075f * cs->detail) *
@@ -2878,101 +2942,109 @@ const uint8_t *dsp_engine_process(
                     common_drive * 0.55f
                 };
 
-                /* All three nonlinear bands are fed from the same PEQ output.
-                 * Their filtered residuals are summed once, in parallel. */
+                uint8_t active_stage_mask = 0;
+                for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+                    const uint32_t bit = 1U << stage;
+                    if ((diag_stage_mask & bit) && stage_mix[stage] > 0.0000001f)
+                        active_stage_mask |= (uint8_t)bit;
+                }
+
+                /* Reset a stage only on the transition to bypass, not per sample. */
+                const uint8_t stages_just_disabled =
+                    s_character_active_stage_mask & (uint8_t)(~active_stage_mask);
+                for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+                    if (stages_just_disabled & (1U << stage)) {
+                        memset(&cs->stage[stage], 0, sizeof(cs->stage[stage]));
+                    }
+                }
+                s_character_active_stage_mask = active_stage_mask;
+
                 const float character_dry[2] = { yl, yr };
                 float character_residual_sum[2] = { 0.0f, 0.0f };
 
                 for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+                    const uint32_t stage_bit = 1U << stage;
+                    if (!(active_stage_mask & stage_bit))
+                        continue;
+
+                    const uint32_t stage_start_cycles = esp_cpu_get_cycle_count();
                     character_stage_state_t *ss = &cs->stage[stage];
                     const character_stage_filter_t *fc =
                         &character_filters.stage[stage];
                     float band[2];
-                    float residual[2];
 
                     for (unsigned ch = 0; ch < 2; ++ch) {
                         band[ch] = biquad_process_sample(
                             character_dry[ch], &fc->input_hpf, &ss->input_hpf[ch]);
                         band[ch] = biquad_process_sample(
                             band[ch], &fc->input_lpf, &ss->input_lpf[ch]);
-                    }
 
-                    /* Shared supply already updated once per stereo frame;
-                     * stage memory remains channel-local. */
-                    const float level_scale = 1.0f -
-                        0.18f * cs->softness * supply_level;
-                    const float mix = stage_mix[stage] * level_scale;
-
-                    for (unsigned ch = 0; ch < 2; ++ch) {
                         const float abs_band = fabsf(band[ch]);
                         const float env_alpha = (abs_band > ss->envelope[ch])
                             ? fc->env_attack_alpha : fc->env_release_alpha;
                         ss->envelope[ch] += env_alpha *
                             (abs_band - ss->envelope[ch]);
 
-                        /* Slow rectified charge plus signed coupling memory
-                         * model interstage RC/bias history without audio-rate
-                         * feedback. Both states are bounded. */
-                        const float charge_alpha = (abs_band > ss->charge[ch])
-                            ? fc->charge_attack_alpha : fc->charge_release_alpha;
-                        ss->charge[ch] += charge_alpha *
-                            (abs_band - ss->charge[ch]);
-                        ss->coupling[ch] += fc->coupling_alpha *
-                            (band[ch] - ss->coupling[ch]);
-                        ss->coupling[ch] = clampf_local(
-                            ss->coupling[ch], -0.12f, 0.12f);
+                        float charge_level = 0.0f;
+                        float bias = 0.0f;
+                        if (memory_active) {
+                            const float charge_alpha = (abs_band > ss->charge[ch])
+                                ? fc->charge_attack_alpha : fc->charge_release_alpha;
+                            ss->charge[ch] += charge_alpha *
+                                (abs_band - ss->charge[ch]);
+                            ss->coupling[ch] += fc->coupling_alpha *
+                                (band[ch] - ss->coupling[ch]);
+                            ss->coupling[ch] = clampf_local(
+                                ss->coupling[ch], -0.12f, 0.12f);
 
-                        const float level = clampf_local(
-                            (ss->envelope[ch] - 0.012f) / 0.16f, 0.0f, 1.0f);
-                        const float charge_level = clampf_local(
-                            (ss->charge[ch] - 0.008f) / 0.14f, 0.0f, 1.0f);
-                        const float bias_target = clampf_local(
-                            base_bias[stage] + cs->memory *
-                                (0.030f * level + 0.050f * charge_level +
-                                 0.025f * ss->coupling[ch]),
-                            -0.16f, 0.18f);
-                        const float bias_alpha =
-                            (bias_target > ss->bias[ch])
-                            ? fc->bias_attack_alpha : fc->bias_release_alpha;
-                        ss->bias[ch] += bias_alpha *
-                            (bias_target - ss->bias[ch]);
+                            const float level = clampf_local(
+                                (ss->envelope[ch] - 0.012f) / 0.16f, 0.0f, 1.0f);
+                            charge_level = clampf_local(
+                                (ss->charge[ch] - 0.008f) / 0.14f, 0.0f, 1.0f);
+                            const float bias_target = clampf_local(
+                                base_bias[stage] + cs->memory *
+                                    (0.030f * level + 0.050f * charge_level +
+                                     0.025f * ss->coupling[ch]),
+                                -0.16f, 0.18f);
+                            const float bias_alpha =
+                                (bias_target > ss->bias[ch])
+                                ? fc->bias_attack_alpha : fc->bias_release_alpha;
+                            ss->bias[ch] += bias_alpha *
+                                (bias_target - ss->bias[ch]);
+                            bias = ss->bias[ch];
+                        }
 
-                        const float drive_now = fmaxf(
-                            0.25f, stage_drive[stage]);
+                        const float drive_now = fmaxf(0.25f, stage_drive[stage]);
                         const float peak_now = clampf_local(
                             ss->envelope[ch] * 1.57079632679f, 0.0f, 0.95f);
-
-                        /* A signed bias changes the even-order curvature;
-                         * detail/charge controls the restrained cubic return. */
                         const float asymmetry = clampf_local(
-                            0.62f + 1.35f * ss->bias[ch], 0.35f, 0.95f);
-                        const float even_gain =
-                            mix * drive_now * asymmetry;
-                        const float odd_shape = 0.075f +
-                            0.11f * cs->detail + 0.055f * charge_level;
-                        const float odd_gain =
-                            mix * drive_now * odd_shape;
+                            0.62f + 1.35f * bias, 0.35f, 0.95f);
+                        const float level_scale = diag_softness
+                            ? (1.0f - 0.18f * cs->softness * supply_level)
+                            : 1.0f;
+                        const float mix = stage_mix[stage] * level_scale;
+                        const float even_gain = mix * drive_now * asymmetry;
+                        const float odd_shape = diag_detail
+                            ? (0.075f + 0.11f * cs->detail + 0.055f * charge_level)
+                            : 0.0f;
+                        const float odd_gain = mix * drive_now * odd_shape;
 
-                        float r;
+                        float residual;
                         if (ss->adaa_valid[ch]) {
-                            /* Average slowly moving coefficients over the ADAA
-                             * interval to avoid memory-control zipper products. */
                             const float even_avg =
                                 0.5f * (even_gain + ss->prev_even_gain[ch]);
                             const float odd_avg =
                                 0.5f * (odd_gain + ss->prev_odd_gain[ch]);
-                            r = character_adaa_poly_residual(
+                            residual = character_adaa_poly_residual(
                                 band[ch], ss->prev_x[ch],
                                 peak_now, ss->prev_peak[ch],
                                 even_avg, odd_avg);
                         } else {
-                            /* Prime the interval so the first output sample
-                             * starts from a valid, deterministic state. */
                             const float peak2 = peak_now * peak_now;
                             const float h2 = band[ch] * band[ch] - 0.5f * peak2;
                             const float h3 = band[ch] * band[ch] * band[ch] -
                                 0.75f * peak2 * band[ch];
-                            r = even_gain * h2 + odd_gain * h3;
+                            residual = even_gain * h2 + odd_gain * h3;
                             ss->adaa_valid[ch] = true;
                         }
                         ss->prev_x[ch] = band[ch];
@@ -2980,40 +3052,42 @@ const uint8_t *dsp_engine_process(
                         ss->prev_odd_gain[ch] = odd_gain;
                         ss->prev_peak[ch] = peak_now;
 
-                        r = biquad_process_sample(
-                            r, &fc->residual_hpf, &ss->residual_hpf[ch]);
-                        /* Stage 1/2 source LPFs already keep their third-order
-                         * products below 2.6/7.6 kHz. Only Stage 3 needs its
-                         * extra anti-spur LPF (10.5 kHz). */
+                        residual = biquad_process_sample(
+                            residual, &fc->residual_hpf, &ss->residual_hpf[ch]);
                         if (stage == 2) {
-                            r = biquad_process_sample(
-                                r, &fc->residual_lpf, &ss->residual_lpf[ch]);
+                            residual = biquad_process_sample(
+                                residual, &fc->residual_lpf, &ss->residual_lpf[ch]);
                         }
-                        residual[ch] = r;
-                        character_residual_sum[ch] += residual[ch];
+                        character_residual_sum[ch] += residual;
                     }
+
+                    character_stage_cycles[stage] +=
+                        (uint32_t)(esp_cpu_get_cycle_count() - stage_start_cycles);
                 }
 
                 yl = character_dry[0] + character_residual_sum[0];
                 yr = character_dry[1] + character_residual_sum[1];
 
-                /* Air remains a separate subtle linear shelf, not a nonlinear
-                 * high-frequency exciter. */
-                for (unsigned ch = 0; ch < 2; ++ch) {
-                    float *sample = (ch == 0) ? &yl : &yr;
-                    cs->air_lp[ch] += character_filters.air_alpha *
-                        (*sample - cs->air_lp[ch]);
-                    *sample += (*sample - cs->air_lp[ch]) * cs->air_gain;
+                /* Air is a separate linear shelf and can be bypassed independently. */
+                if (diag_air && fabsf(cs->air_gain) > 0.000002f) {
+                    for (unsigned ch = 0; ch < 2; ++ch) {
+                        float *sample = (ch == 0) ? &yl : &yr;
+                        cs->air_lp[ch] += character_filters.air_alpha *
+                            (*sample - cs->air_lp[ch]);
+                        *sample += (*sample - cs->air_lp[ch]) * cs->air_gain;
+                    }
+                } else if (!diag_air) {
+                    cs->air_lp[0] = 0.0f;
+                    cs->air_lp[1] = 0.0f;
                 }
 
                 cs->running = character_mix_active;
                 if (!cs->running) {
-                    /* Clear filter/ADAA history after the 12 ms control fade.
-                     * Re-enable then starts from a deterministic zero state. */
                     memset(cs->stage, 0, sizeof(cs->stage));
                     cs->supply_envelope = 0.0f;
                     cs->air_lp[0] = 0.0f;
                     cs->air_lp[1] = 0.0f;
+                    s_character_active_stage_mask = 0;
                 }
             }
         }
@@ -3283,6 +3357,34 @@ const uint8_t *dsp_engine_process(
             );
     }
 
+
+    if (character_enabled) {
+        const uint32_t cpu_mhz =
+            (CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ > 0)
+            ? CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ : 240U;
+
+        for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+            const uint32_t elapsed_us = character_stage_cycles[stage] / cpu_mhz;
+            atomic_fetch_add_explicit(
+                &s_character_diag_stage_total_us[stage],
+                elapsed_us,
+                memory_order_relaxed);
+
+            uint32_t previous_max = atomic_load_explicit(
+                &s_character_diag_stage_max_us[stage],
+                memory_order_relaxed);
+            while (elapsed_us > previous_max &&
+                   !atomic_compare_exchange_weak_explicit(
+                       &s_character_diag_stage_max_us[stage],
+                       &previous_max,
+                       elapsed_us,
+                       memory_order_relaxed,
+                       memory_order_relaxed)) {
+            }
+        }
+        atomic_fetch_add_explicit(
+            &s_character_diag_blocks, 1U, memory_order_relaxed);
+    }
 
     return s_scratch;
 }
