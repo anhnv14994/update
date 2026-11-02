@@ -8,7 +8,6 @@ config DSP_CHARACTER_PROFILE
         This adds cycle-counter reads inside the sample loop and is intended
         only for profiling builds. Keep disabled for normal playback.
 
-endmenu
 
 config DSP_PEQ_USE_ESP_DSP
     bool "Use ESP-DSP stereo block biquad for PEQ"
@@ -21,3 +20,5 @@ config DSP_PEQ_USE_ESP_DSP
         realization instead of the native transposed DF-II implementation.
         Keep disabled for the reference backend. Enable for A/B CPU and
         listening tests before making it the default.
+
+endmenu
