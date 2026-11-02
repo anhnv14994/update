@@ -29,80 +29,36 @@ static httpd_handle_t web_server = NULL;
 static raop_handle_t *raop_handle = NULL;
 static struct udp_pcb *dns_pcb = NULL;
 
-// Audio output callback - runs the DSP chain (PEQ + shelf + master gain),
-// then Stereo Spatial (frequency-dependent M/S widening), then forwards to
-// I2S hardware exactly as before. The AirPlay/ALAC/buffer pipeline that
-// calls this is untouched; when both stages are disabled, each hands back
-// the previous buffer unmodified (zero-copy bypass all the way through).
+// Character + Spatial run on the lower-priority DSP worker.
+// The high-priority output task now only handles timing and I2S submission.
 stereo_spatial_ctx_t *g_stereo_ctx = NULL;
 
-
 static void dsp_pcm_callback(
-    const uint8_t *data,
+    uint8_t *data,
     size_t len,
     void *user_ctx)
 {
     (void)user_ctx;
 
     size_t out_len = len;
-
-    const uint8_t *processed =
-        dsp_engine_process(
-            data,
-            len,
-            &out_len);
-
-    if (!processed)
+    uint8_t *processed = dsp_engine_process(data, len, &out_len);
+    if (!processed || out_len == 0 || out_len > len)
         return;
 
-    /*
-     * dsp_engine_process() thường trả về s_scratch.
-     * Copy PCM đã xử lý ngược vào DSP frame.
-     *
-     * audio_buffer truyền frame->data vào callback.
-     * Buffer thực tế là writable dù API khai báo const.
-     */
-    if (processed != data &&
-        out_len > 0 &&
-        out_len <= len) {
-
-        memcpy(
-            (void *)data,
-            processed,
-            out_len);
+    if (g_stereo_ctx) {
+        const size_t frames = out_len / (sizeof(int16_t) * 2);
+        stereo_spatial_process_i16(
+            g_stereo_ctx, (int16_t *)(void *)processed, frames);
     }
 }
 
-// static void audio_output_callback(const uint8_t *data, size_t len, void *user_data)
-// {
-//     // 1. Process PEQ / DSP Engine
-//     size_t peq_len = len;
-//     const uint8_t *peq_out = dsp_engine_process(data, len, &peq_len);
-
-//     // 2. Process Stereo Spatial v2 (In-place processing)
-//     if (g_stereo_ctx && peq_out) {
-//         // Stereo 16-bit = 4 bytes/frame -> frames = peq_len / 4
-//         size_t frames = peq_len / (sizeof(int16_t) * 2);
-//         stereo_spatial_process_i16(g_stereo_ctx, (int16_t *)(uintptr_t)peq_out, frames);
-//     }
-
-//     // 3. Xuất ra I2S
-//     i2s_output_write(peq_out, peq_len);
-// }
-
-static void audio_output_callback(const uint8_t *data, size_t len, void *user_data)
+static void audio_output_callback(
+    const uint8_t *data,
+    size_t len,
+    void *user_data)
 {
-    // Dữ liệu 'data' đã được dsp_pcm_callback xử lý hoàn tất tại audio_dsp_task
-    size_t out_len = len;
-
-    // 1. Process Stereo Spatial (nếu bật)
-    if (g_stereo_ctx && data) {
-        size_t frames = out_len / (sizeof(int16_t) * 2);
-        stereo_spatial_process_i16(g_stereo_ctx, (int16_t *)(uintptr_t)data, frames);
-    }
-
-    // 2. Xuất thẳng ra I2S
-    i2s_output_write(data, out_len);
+    (void)user_data;
+    i2s_output_write(data, len);
 }
 
 static void raop_event_handler(raop_event_t event, void *event_data, void *user_ctx)
