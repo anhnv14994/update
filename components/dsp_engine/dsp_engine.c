@@ -2813,6 +2813,9 @@ const uint8_t *dsp_engine_process(
     const float character_control_smooth = 1.0f - expf(
         -1.0f / (0.012f * DSP_SAMPLE_RATE_HZ));
 
+    uint32_t character_stage_cycles[CHARACTER_STAGE_COUNT] = {0};
+    uint32_t character_total_cycles = 0;
+
     for (size_t i = 0;
          i < frames;
          i++) {
@@ -2882,17 +2885,34 @@ const uint8_t *dsp_engine_process(
          * limits that residual, then returns it in parallel. No audio sample
          * is fed back; memory lives in bounded envelope/coupling/supply states.
          */
+        const uint32_t character_sample_start_cycles =
+            esp_cpu_get_cycle_count();
         {
             character_state_t *cs = &s_character_state;
             const float smooth = character_control_smooth;
+            const uint8_t feature_mask =
+                character_enabled ? character.feature_mask : 0U;
 
-            const float tw = character_enabled ? character.warmth_pct * 0.01f : 0.0f;
-            const float td = character_enabled ? character.detail_pct * 0.01f : 0.0f;
-            const float tr = character_enabled ? character.drive_pct * 0.01f : 0.0f;
-            const float ts = character_enabled ? character.softness_pct * 0.01f : 0.0f;
-            const float tm = character_enabled ? character.memory_pct * 0.01f : 0.0f;
-            const float tsp = character_enabled ? character.spectral_pct * 0.01f : 0.0f;
-            const float ta = character_enabled
+            const float tw =
+                (feature_mask & DSP_CHARACTER_FEATURE_WARMTH)
+                ? character.warmth_pct * 0.01f : 0.0f;
+            const float td =
+                (feature_mask & DSP_CHARACTER_FEATURE_DETAIL)
+                ? character.detail_pct * 0.01f : 0.0f;
+            const float tr =
+                (feature_mask & DSP_CHARACTER_FEATURE_DRIVE)
+                ? character.drive_pct * 0.01f : 0.0f;
+            const float ts =
+                (feature_mask & DSP_CHARACTER_FEATURE_SOFTNESS)
+                ? character.softness_pct * 0.01f : 0.0f;
+            const float tm =
+                (feature_mask & DSP_CHARACTER_FEATURE_MEMORY)
+                ? character.memory_pct * 0.01f : 0.0f;
+            const float tsp =
+                (feature_mask & DSP_CHARACTER_FEATURE_SPECTRAL)
+                ? character.spectral_pct * 0.01f : 0.5f;
+            const float ta =
+                (feature_mask & DSP_CHARACTER_FEATURE_AIR)
                 ? (db_to_linear(character.air_pct * 0.015f) - 1.0f) : 0.0f;
 
             cs->warmth += smooth * (tw - cs->warmth);
@@ -2903,9 +2923,23 @@ const uint8_t *dsp_engine_process(
             cs->spectral += smooth * (tsp - cs->spectral);
             cs->air_gain += smooth * (ta - cs->air_gain);
 
+            const bool nonlinear_target_active =
+                (tw > 0.00002f || td > 0.00002f);
+            const uint8_t requested_stage_mask =
+                nonlinear_target_active ? character.stage_mask : 0U;
+            bool any_stage_active = false;
+            for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+                const float target =
+                    (requested_stage_mask & (1U << stage)) ? 1.0f : 0.0f;
+                cs->stage_enable[stage] +=
+                    smooth * (target - cs->stage_enable[stage]);
+                if (cs->stage_enable[stage] > 0.00002f)
+                    any_stage_active = true;
+            }
+
             const bool character_mix_active =
-                (cs->warmth > 0.00002f) ||
-                (cs->detail > 0.00002f) ||
+                (any_stage_active &&
+                 ((cs->warmth > 0.00002f) || (cs->detail > 0.00002f))) ||
                 (fabsf(cs->air_gain) > 0.000002f);
 
             /* Do not run the nonlinear network when Character is enabled
@@ -2914,20 +2948,32 @@ const uint8_t *dsp_engine_process(
             if (character_mix_active || cs->running) {
                 /* Stereo-linked slow supply memory. Both channels receive the
                  * same sag coefficient so the phantom centre cannot wander. */
-                const float program_level = 0.5f * (fabsf(yl) + fabsf(yr));
-                const float supply_alpha =
-                    (program_level > cs->supply_envelope)
-                    ? character_filters.supply_attack_alpha
-                    : character_filters.supply_release_alpha;
-                cs->supply_envelope += supply_alpha *
-                    (program_level - cs->supply_envelope);
-                const float supply_level = clampf_local(
-                    (cs->supply_envelope - 0.025f) / 0.20f, 0.0f, 1.0f);
-                const float supply_sag = 0.055f * cs->memory *
-                    (0.35f + 0.65f * cs->softness) * supply_level;
-                const float common_drive =
-                    (0.90f + 1.90f * cs->drive) * (1.0f - supply_sag);
+                float supply_level = 0.0f;
+                float supply_sag = 0.0f;
+                const bool memory_active = cs->memory > 0.00002f;
+                if (memory_active) {
+                    const float program_level = 0.5f * (fabsf(yl) + fabsf(yr));
+                    const float supply_alpha =
+                        (program_level > cs->supply_envelope)
+                        ? character_filters.supply_attack_alpha
+                        : character_filters.supply_release_alpha;
+                    cs->supply_envelope += supply_alpha *
+                        (program_level - cs->supply_envelope);
+                    supply_level = clampf_local(
+                        (cs->supply_envelope - 0.025f) / 0.20f, 0.0f, 1.0f);
+                    supply_sag = 0.055f * cs->memory *
+                        (0.35f + 0.65f * cs->softness) * supply_level;
+                } else {
+                    cs->supply_envelope = 0.0f;
+                }
 
+                /* Drive OFF is unity gain, not an accidental zero-drive mute. */
+                const float drive_base =
+                    (feature_mask & DSP_CHARACTER_FEATURE_DRIVE)
+                    ? (0.90f + 1.90f * cs->drive) : 1.0f;
+                const float common_drive = drive_base * (1.0f - supply_sag);
+
+                /* Spectral OFF uses a neutral 50/50 stage balance. */
                 const float spectral = cs->spectral;
                 const float stage_mix[CHARACTER_STAGE_COUNT] = {
                     0.190f * cs->warmth * (1.15f - 0.30f * spectral),
@@ -2956,6 +3002,15 @@ const uint8_t *dsp_engine_process(
                     character_stage_state_t *ss = &cs->stage[stage];
                     const character_stage_filter_t *fc =
                         &character_filters.stage[stage];
+
+                    if (cs->stage_enable[stage] <= 0.00002f) {
+                        if (ss->adaa_valid[0] || ss->adaa_valid[1])
+                            memset(ss, 0, sizeof(*ss));
+                        continue;
+                    }
+
+                    const uint32_t stage_start_cycles =
+                        esp_cpu_get_cycle_count();
                     float band[2];
                     float residual[2];
 
@@ -2970,7 +3025,8 @@ const uint8_t *dsp_engine_process(
                      * stage memory remains channel-local. */
                     const float level_scale = 1.0f -
                         0.18f * cs->softness * supply_level;
-                    const float mix = stage_mix[stage] * level_scale;
+                    const float mix =
+                        stage_mix[stage] * level_scale * cs->stage_enable[stage];
 
                     for (unsigned ch = 0; ch < 2; ++ch) {
                         const float abs_band = fabsf(band[ch]);
@@ -2979,32 +3035,39 @@ const uint8_t *dsp_engine_process(
                         ss->envelope[ch] += env_alpha *
                             (abs_band - ss->envelope[ch]);
 
-                        /* Slow rectified charge plus signed coupling memory
-                         * model interstage RC/bias history without audio-rate
-                         * feedback. Both states are bounded. */
-                        const float charge_alpha = (abs_band > ss->charge[ch])
-                            ? fc->charge_attack_alpha : fc->charge_release_alpha;
-                        ss->charge[ch] += charge_alpha *
-                            (abs_band - ss->charge[ch]);
-                        ss->coupling[ch] += fc->coupling_alpha *
-                            (band[ch] - ss->coupling[ch]);
-                        ss->coupling[ch] = clampf_local(
-                            ss->coupling[ch], -0.12f, 0.12f);
+                        float charge_level = 0.0f;
+                        if (memory_active) {
+                            /* Slow charge/coupling states are bypassed completely
+                             * when Memory is OFF to reduce both work and state. */
+                            const float charge_alpha =
+                                (abs_band > ss->charge[ch])
+                                ? fc->charge_attack_alpha : fc->charge_release_alpha;
+                            ss->charge[ch] += charge_alpha *
+                                (abs_band - ss->charge[ch]);
+                            ss->coupling[ch] += fc->coupling_alpha *
+                                (band[ch] - ss->coupling[ch]);
+                            ss->coupling[ch] = clampf_local(
+                                ss->coupling[ch], -0.12f, 0.12f);
 
-                        const float level = clampf_local(
-                            (ss->envelope[ch] - 0.012f) / 0.16f, 0.0f, 1.0f);
-                        const float charge_level = clampf_local(
-                            (ss->charge[ch] - 0.008f) / 0.14f, 0.0f, 1.0f);
-                        const float bias_target = clampf_local(
-                            base_bias[stage] + cs->memory *
-                                (0.030f * level + 0.050f * charge_level +
-                                 0.025f * ss->coupling[ch]),
-                            -0.16f, 0.18f);
-                        const float bias_alpha =
-                            (bias_target > ss->bias[ch])
-                            ? fc->bias_attack_alpha : fc->bias_release_alpha;
-                        ss->bias[ch] += bias_alpha *
-                            (bias_target - ss->bias[ch]);
+                            const float level = clampf_local(
+                                (ss->envelope[ch] - 0.012f) / 0.16f, 0.0f, 1.0f);
+                            charge_level = clampf_local(
+                                (ss->charge[ch] - 0.008f) / 0.14f, 0.0f, 1.0f);
+                            const float bias_target = clampf_local(
+                                base_bias[stage] + cs->memory *
+                                    (0.030f * level + 0.050f * charge_level +
+                                     0.025f * ss->coupling[ch]),
+                                -0.16f, 0.18f);
+                            const float bias_alpha =
+                                (bias_target > ss->bias[ch])
+                                ? fc->bias_attack_alpha : fc->bias_release_alpha;
+                            ss->bias[ch] += bias_alpha *
+                                (bias_target - ss->bias[ch]);
+                        } else {
+                            ss->charge[ch] = 0.0f;
+                            ss->coupling[ch] = 0.0f;
+                            ss->bias[ch] = base_bias[stage];
+                        }
 
                         const float drive_now = fmaxf(
                             0.25f, stage_drive[stage]);
@@ -3061,6 +3124,8 @@ const uint8_t *dsp_engine_process(
                         residual[ch] = r;
                         character_residual_sum[ch] += residual[ch];
                     }
+                    character_stage_cycles[stage] +=
+                        esp_cpu_get_cycle_count() - stage_start_cycles;
                 }
 
                 yl = character_dry[0] + character_residual_sum[0];
@@ -3068,14 +3133,24 @@ const uint8_t *dsp_engine_process(
 
                 /* Air remains a separate subtle linear shelf, not a nonlinear
                  * high-frequency exciter. */
-                for (unsigned ch = 0; ch < 2; ++ch) {
-                    float *sample = (ch == 0) ? &yl : &yr;
-                    cs->air_lp[ch] += character_filters.air_alpha *
-                        (*sample - cs->air_lp[ch]);
-                    *sample += (*sample - cs->air_lp[ch]) * cs->air_gain;
+                if (fabsf(cs->air_gain) > 0.000002f) {
+                    for (unsigned ch = 0; ch < 2; ++ch) {
+                        float *sample = (ch == 0) ? &yl : &yr;
+                        cs->air_lp[ch] += character_filters.air_alpha *
+                            (*sample - cs->air_lp[ch]);
+                        *sample += (*sample - cs->air_lp[ch]) * cs->air_gain;
+                    }
+                } else {
+                    cs->air_lp[0] = 0.0f;
+                    cs->air_lp[1] = 0.0f;
                 }
 
-                cs->running = character_mix_active;
+                bool stage_tail_active = false;
+                for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+                    if (cs->stage_enable[stage] > 0.00002f)
+                        stage_tail_active = true;
+                }
+                cs->running = character_mix_active || stage_tail_active;
                 if (!cs->running) {
                     /* Clear filter/ADAA history after the 12 ms control fade.
                      * Re-enable then starts from a deterministic zero state. */
@@ -3086,6 +3161,8 @@ const uint8_t *dsp_engine_process(
                 }
             }
         }
+        character_total_cycles +=
+            esp_cpu_get_cycle_count() - character_sample_start_cycles;
 
         /*
          * ----------------------------------------------------
@@ -3353,5 +3430,71 @@ const uint8_t *dsp_engine_process(
     }
 
 
+    const uint32_t diag_frames =
+        atomic_fetch_add_explicit(
+            &s_character_diag_frames, 1, memory_order_relaxed) + 1U;
+    atomic_fetch_add_explicit(
+        &s_character_diag_total_cycles,
+        character_total_cycles,
+        memory_order_relaxed);
+
+    for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+        atomic_fetch_add_explicit(
+            &s_character_diag_stage_cycles[stage],
+            character_stage_cycles[stage],
+            memory_order_relaxed);
+
+        uint32_t prev_max = atomic_load_explicit(
+            &s_character_diag_stage_max_cycles[stage],
+            memory_order_relaxed);
+        while (character_stage_cycles[stage] > prev_max &&
+               !atomic_compare_exchange_weak_explicit(
+                   &s_character_diag_stage_max_cycles[stage],
+                   &prev_max,
+                   character_stage_cycles[stage],
+                   memory_order_relaxed,
+                   memory_order_relaxed)) {
+        }
+    }
+
+    const uint32_t now_ms =
+        (uint32_t)(esp_timer_get_time() / 1000ULL);
+    if (now_ms - s_character_diag_last_log_ms >= 5000U) {
+        const uint32_t count = atomic_exchange_explicit(
+            &s_character_diag_frames, 0, memory_order_relaxed);
+        const uint32_t total_cycles = atomic_exchange_explicit(
+            &s_character_diag_total_cycles, 0, memory_order_relaxed);
+        const float cpu_mhz = (float)esp_clk_cpu_freq() / 1000000.0f;
+
+        if (count > 0 && cpu_mhz > 0.0f) {
+            const float total_avg_us =
+                (float)total_cycles / (cpu_mhz * (float)count);
+            uint32_t stage_sum[CHARACTER_STAGE_COUNT];
+            uint32_t stage_max[CHARACTER_STAGE_COUNT];
+            for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+                stage_sum[stage] = atomic_exchange_explicit(
+                    &s_character_diag_stage_cycles[stage],
+                    0, memory_order_relaxed);
+                stage_max[stage] = atomic_exchange_explicit(
+                    &s_character_diag_stage_max_cycles[stage],
+                    0, memory_order_relaxed);
+            }
+
+            ESP_LOGI(TAG,
+                "Character diag %u frames: total_avg=%.1fus "
+                "S1=%.1f/%.1f S2=%.1f/%.1f S3=%.1f/%.1fus "
+                "(avg/max per 352-sample frame)",
+                count, total_avg_us,
+                (float)stage_sum[0] / (cpu_mhz * (float)count),
+                (float)stage_max[0] / cpu_mhz,
+                (float)stage_sum[1] / (cpu_mhz * (float)count),
+                (float)stage_max[1] / cpu_mhz,
+                (float)stage_sum[2] / (cpu_mhz * (float)count),
+                (float)stage_max[2] / cpu_mhz);
+        }
+        s_character_diag_last_log_ms = now_ms;
+    }
+
+    (void)diag_frames;
     return s_scratch;
 }
