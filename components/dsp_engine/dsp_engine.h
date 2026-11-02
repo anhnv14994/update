@@ -52,36 +52,42 @@ typedef struct {
 } dsp_preset_t;
 
 /* ============================================================
- * Bass Harmonic Exciter
+ * Analog Character diagnostic bypass masks (session-only)
  * ============================================================ */
 
-#define EXC_H2_MIN              0.00f
-#define EXC_H2_MAX              0.12f
+#define DSP_CHARACTER_STAGE_1          (1U << 0)
+#define DSP_CHARACTER_STAGE_2          (1U << 1)
+#define DSP_CHARACTER_STAGE_3          (1U << 2) /* Reserved; bypassed in V5 Lite. */
+#define DSP_CHARACTER_STAGE_MASK_ALL   (DSP_CHARACTER_STAGE_1 | DSP_CHARACTER_STAGE_2)
 
-#define EXC_H3_MIN              0.00f
-#define EXC_H3_MAX              0.06f
-
-#define EXC_CROSSOVER_MIN       30.0f
-#define EXC_CROSSOVER_MAX       100.0f
+#define DSP_CHARACTER_FEATURE_WARMTH   (1U << 0)
+#define DSP_CHARACTER_FEATURE_DETAIL   (1U << 1)
+#define DSP_CHARACTER_FEATURE_DRIVE    (1U << 2)
+/* V4-only feature bits retained for source/NVS compatibility; ignored in V5. */
+#define DSP_CHARACTER_FEATURE_SOFTNESS (1U << 3)
+#define DSP_CHARACTER_FEATURE_AIR      (1U << 4)
+#define DSP_CHARACTER_FEATURE_MEMORY   (1U << 5)
+#define DSP_CHARACTER_FEATURE_SPECTRAL (1U << 6)
+#define DSP_CHARACTER_FEATURE_MASK_ALL (DSP_CHARACTER_FEATURE_WARMTH | DSP_CHARACTER_FEATURE_DETAIL | DSP_CHARACTER_FEATURE_DRIVE)
 
 typedef struct {
-    bool  enabled;
+    uint8_t stage_mask;
+    uint8_t feature_mask;
+    uint32_t blocks;
+    uint32_t stage_avg_us[3]; /* Stage 3 slot is reserved and remains zero in V5. */
+    uint32_t stage_max_us[3];
+    uint32_t cpu_mhz;
+} dsp_character_diagnostics_t;
 
-    /* Internal representation:
-     * 0.06 = 6%
-     * 0.02 = 2%
-     */
-    float h2_pct;
-
-    float h3_pct;
-
-    float crossover_hz;
-} dsp_exciter_t;
+/* Diagnostic masks are volatile and are not written to NVS. */
+esp_err_t dsp_engine_set_character_diagnostics(uint8_t stage_mask,
+                                               uint8_t feature_mask);
+esp_err_t dsp_engine_get_character_diagnostics(dsp_character_diagnostics_t *out);
 
 /* ============================================================
- * Analog Character Engine V4.1
- * Three-stage asymmetric polynomial waveshaper + exact first-order ADAA + state memory.
- * Public structure/API remains V2-compatible; no NVS layout change.
+ * Analog Character Engine V5.1 Lite
+ * Two-stage polynomial waveshaper + mean-square tracking and optional controls.
+ * V5.1 adds versioned NVS migration for the appended controls.
  * ============================================================ */
 
 typedef enum {
@@ -96,10 +102,16 @@ typedef struct {
     float warmth_pct;   /* 0..100: normalized H2/body amount */
     float detail_pct;   /* 0..100: normalized H3/detail amount */
     float drive_pct;    /* 0..100: overall harmonic mix multiplier */
-    float softness_pct; /* 0..100: backs off harmonics on loud peaks */
-    float air_pct;      /* 0..100: high-frequency shelf, up to +1.5 dB */
-    float memory_pct;   /* 0..100: bias/coupling/shared-supply memory depth */
-    float spectral_pct;/* 0..100: low-to-upper-stage saturation balance */
+    float softness_pct; /* Reserved V4 field; ignored by V5 Lite. */
+    float air_pct;      /* Reserved V4 field; ignored by V5 Lite. */
+    float memory_pct;   /* Reserved V4 field; ignored by V5 Lite. */
+    float spectral_pct; /* Reserved V4 field; ignored by V5 Lite. */
+
+    /* V5.1 Lite controls; defaults are OFF to preserve V5 Lite voicing. */
+    bool harmonic_interaction_enabled;
+    float harmonic_interaction_pct; /* 0..100: Stage 1 -> Stage 2 coupling */
+    bool dynamic_saturation_enabled;
+    float dynamic_saturation_pct;   /* 0..100: level-dependent harmonic drive */
 } dsp_character_t;
 
 /* ============================================================
@@ -121,6 +133,9 @@ esp_err_t dsp_engine_init(void);
 const uint8_t *dsp_engine_process(const uint8_t *pcm_in,
                                   size_t len_bytes,
                                   size_t *out_len);
+
+/* In-place variant for writable real-time pipeline frames; no scratch copy. */
+void dsp_engine_process_inplace(uint8_t *pcm, size_t len_bytes);
 
 /* ============================================================
  * DSP enable
@@ -170,24 +185,6 @@ const char *dsp_engine_preset_name(dsp_preset_id_t id);
 
 esp_err_t dsp_engine_save_preset(dsp_preset_id_t id);
 esp_err_t dsp_engine_reset_preset(dsp_preset_id_t id);
-
-/* ============================================================
- * Bass Harmonic Exciter
- * ============================================================ */
-
-esp_err_t dsp_engine_set_exciter(bool enabled,
-                                 float h2_pct,
-                                 float h3_pct,
-                                 float crossover_hz);
-
-esp_err_t dsp_engine_get_exciter(dsp_exciter_t *out);
-
-esp_err_t dsp_engine_set_exciter_enabled(bool enabled);
-esp_err_t dsp_engine_set_exciter_h2(float h2_pct);
-esp_err_t dsp_engine_set_exciter_h3(float h3_pct);
-esp_err_t dsp_engine_set_exciter_crossover(float crossover_hz);
-
-esp_err_t dsp_engine_save_exciter(void);
 
 /* Analog Character */
 esp_err_t dsp_engine_set_character(const dsp_character_t *config);

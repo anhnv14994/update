@@ -239,59 +239,6 @@ static cJSON *build_state_json(void)
 
 
     // ---------------------------------------------------------
-    // Harmonic Bass Exciter
-    // ---------------------------------------------------------
-
-    dsp_exciter_t exciter;
-
-    if (dsp_engine_get_exciter(&exciter) == ESP_OK) {
-
-        cJSON *exc =
-            cJSON_CreateObject();
-
-        cJSON_AddBoolToObject(
-            exc,
-            "enabled",
-            exciter.enabled
-        );
-
-        /*
-         * Gửi ra dạng % để JS dễ sử dụng.
-         *
-         * Engine:
-         *   0.06 = 6%
-         *
-         * Web:
-         *   6
-         */
-
-        cJSON_AddNumberToObject(
-            exc,
-            "h2_pct",
-            exciter.h2_pct * 100.0
-        );
-
-        cJSON_AddNumberToObject(
-            exc,
-            "h3_pct",
-            exciter.h3_pct * 100.0
-        );
-
-        cJSON_AddNumberToObject(
-            exc,
-            "crossover_hz",
-            exciter.crossover_hz
-        );
-
-        cJSON_AddItemToObject(
-            root,
-            "exciter",
-            exc
-        );
-    }
-
-
-    // ---------------------------------------------------------
     // Analog Character
     // ---------------------------------------------------------
 
@@ -307,6 +254,14 @@ static cJSON *build_state_json(void)
         cJSON_AddNumberToObject(ch, "air_pct", character.air_pct);
         cJSON_AddNumberToObject(ch, "memory_pct", character.memory_pct);
         cJSON_AddNumberToObject(ch, "spectral_pct", character.spectral_pct);
+        cJSON_AddBoolToObject(ch, "harmonic_interaction_enabled",
+                              character.harmonic_interaction_enabled);
+        cJSON_AddNumberToObject(ch, "harmonic_interaction_pct",
+                                character.harmonic_interaction_pct);
+        cJSON_AddBoolToObject(ch, "dynamic_saturation_enabled",
+                              character.dynamic_saturation_enabled);
+        cJSON_AddNumberToObject(ch, "dynamic_saturation_pct",
+                                character.dynamic_saturation_pct);
         cJSON_AddItemToObject(root, "character", ch);
     }
 
@@ -477,16 +432,19 @@ static esp_err_t dsp_page_handler(
     httpd_req_t *req
 )
 {
-    httpd_resp_set_type(
-        req,
-        "text/html"
-    );
+    httpd_resp_set_type(req, "text/html");
+
+    /* The page is embedded in firmware. Never allow a browser/proxy to keep
+     * an older /dsp page after OTA or a firmware rebuild. */
+    httpd_resp_set_hdr(req, "Cache-Control",
+                       "no-store, no-cache, must-revalidate, max-age=0");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+    httpd_resp_set_hdr(req, "Expires", "0");
 
     httpd_resp_send(
         req,
         web_dsp_html_start,
-        web_dsp_html_end -
-        web_dsp_html_start
+        web_dsp_html_end - web_dsp_html_start
     );
 
     return ESP_OK;
@@ -558,183 +516,88 @@ static esp_err_t api_enabled_handler(
 
 
 // ---------------------------------------------------------------------------
-// HARMONIC BASS EXCITER
-//
-// JSON:
-// {
-//   "enabled": true,
-//   "h2_pct": 6.0,
-//   "h3_pct": 2.0,
-//   "crossover_hz": 60
-// }
-//
-// h2_pct / h3_pct là % trên web.
-// Engine tự đổi về 0.06 / 0.02.
-// ---------------------------------------------------------------------------
-
-static esp_err_t api_exciter_handler(
-    httpd_req_t *req
-)
-{
-    char buf[256];
-
-    cJSON *body =
-        parse_request_json(
-            req,
-            buf,
-            sizeof(buf)
-        );
-
-
-    if (!body)
-        return send_error_json(
-            req,
-            400,
-            "invalid or empty json"
-        );
-
-
-    dsp_exciter_t current;
-
-    if (dsp_engine_get_exciter(&current) != ESP_OK) {
-
-        cJSON_Delete(body);
-
-        return send_error_json(
-            req,
-            500,
-            "cannot read exciter"
-        );
-    }
-
-
-    // ---------------------------------------------------------
-    // enabled
-    // ---------------------------------------------------------
-
-    cJSON *enabled =
-        cJSON_GetObjectItem(
-            body,
-            "enabled"
-        );
-
-    if (enabled &&
-        cJSON_IsBool(enabled)) {
-
-        current.enabled =
-            cJSON_IsTrue(enabled);
-    }
-
-
-    /* A pure enable/disable request is deliberately isolated from every
-     * other DSP control. In particular it never touches global DSP enable,
-     * PEQ coefficients, active preset, or master gain. */
-    cJSON *h2_only = cJSON_GetObjectItem(body, "h2_pct");
-    cJSON *h3_only = cJSON_GetObjectItem(body, "h3_pct");
-    cJSON *xover_only = cJSON_GetObjectItem(body, "crossover_hz");
-    if (enabled && cJSON_IsBool(enabled) && !h2_only && !h3_only && !xover_only) {
-        esp_err_t toggle_err = dsp_engine_set_exciter_enabled(
-            cJSON_IsTrue(enabled));
-        cJSON_Delete(body);
-        if (toggle_err != ESP_OK)
-            return send_error_json(req, 400, "cannot toggle exciter");
-        return send_state(req);
-    }
-
-    // ---------------------------------------------------------
-    // H2 %
-    // ---------------------------------------------------------
-
-    cJSON *h2_full =
-        cJSON_GetObjectItem(
-            body,
-            "h2_pct"
-        );
-
-    if (h2_full &&
-        cJSON_IsNumber(h2_full)) {
-
-        current.h2_pct =
-            (float)h2_full->valuedouble /
-            100.0f;
-    }
-
-
-    // ---------------------------------------------------------
-    // H3 %
-    // ---------------------------------------------------------
-
-    cJSON *h3 =
-        cJSON_GetObjectItem(
-            body,
-            "h3_pct"
-        );
-
-    if (h3 &&
-        cJSON_IsNumber(h3)) {
-
-        current.h3_pct =
-            (float)h3->valuedouble /
-            100.0f;
-    }
-
-
-    // ---------------------------------------------------------
-    // Crossover
-    // ---------------------------------------------------------
-
-    cJSON *xover =
-        cJSON_GetObjectItem(
-            body,
-            "crossover_hz"
-        );
-
-    if (xover &&
-        cJSON_IsNumber(xover)) {
-
-        current.crossover_hz =
-            (float)xover->valuedouble;
-    }
-
-
-    esp_err_t err =
-        dsp_engine_set_exciter(
-            current.enabled,
-            current.h2_pct,
-            current.h3_pct,
-            current.crossover_hz
-        );
-
-
-    cJSON_Delete(body);
-
-
-    if (err != ESP_OK)
-        return send_error_json(
-            req,
-            400,
-            "invalid exciter parameters"
-        );
-
-
-    /*
-     * Trả state mới về browser.
-     *
-     * Realtime:
-     *   không ghi NVS.
-     */
-
-    return send_state(req);
-}
-
-
-// ---------------------------------------------------------------------------
 // Analog Character: profile A/B + realtime controls
 // ---------------------------------------------------------------------------
 
+static esp_err_t send_character_diag_state(httpd_req_t *req)
+{
+    dsp_character_diagnostics_t diag;
+    if (dsp_engine_get_character_diagnostics(&diag) != ESP_OK)
+        return httpd_resp_send_500(req);
+
+    cJSON *root = cJSON_CreateObject();
+    if (!root)
+        return httpd_resp_send_500(req);
+
+    cJSON_AddNumberToObject(root, "stage_mask", diag.stage_mask);
+    cJSON_AddNumberToObject(root, "feature_mask", diag.feature_mask);
+    cJSON_AddNumberToObject(root, "blocks", diag.blocks);
+    cJSON_AddNumberToObject(root, "cpu_mhz", diag.cpu_mhz);
+
+    cJSON *avg = cJSON_CreateArray();
+    cJSON *max = cJSON_CreateArray();
+    if (!avg || !max) {
+        cJSON_Delete(avg);
+        cJSON_Delete(max);
+        cJSON_Delete(root);
+        return httpd_resp_send_500(req);
+    }
+
+    for (int i = 0; i < 3; ++i) {
+        cJSON_AddItemToArray(avg, cJSON_CreateNumber(diag.stage_avg_us[i]));
+        cJSON_AddItemToArray(max, cJSON_CreateNumber(diag.stage_max_us[i]));
+    }
+    cJSON_AddItemToObject(root, "stage_avg_us", avg);
+    cJSON_AddItemToObject(root, "stage_max_us", max);
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json)
+        return httpd_resp_send_500(req);
+
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t err = httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+    free(json);
+    return err;
+}
+
+static esp_err_t api_character_diag_handler(httpd_req_t *req)
+{
+    if (req->method == HTTP_GET)
+        return send_character_diag_state(req);
+
+    char buf[128];
+    cJSON *body = parse_request_json(req, buf, sizeof(buf));
+    if (!body)
+        return send_error_json(req, 400, "invalid or empty json");
+
+    cJSON *stage = cJSON_GetObjectItem(body, "stage_mask");
+    cJSON *feature = cJSON_GetObjectItem(body, "feature_mask");
+    if (!cJSON_IsNumber(stage) || !cJSON_IsNumber(feature) ||
+        stage->valueint < 0 || stage->valueint > (int)DSP_CHARACTER_STAGE_MASK_ALL ||
+        feature->valueint < 0 || feature->valueint > (int)DSP_CHARACTER_FEATURE_MASK_ALL) {
+        cJSON_Delete(body);
+        return send_error_json(req, 400, "stage_mask 0..3 and feature_mask 0..7 required");
+    }
+
+    esp_err_t err = dsp_engine_set_character_diagnostics(
+        (uint8_t)stage->valueint, (uint8_t)feature->valueint);
+    cJSON_Delete(body);
+
+    if (err != ESP_OK)
+        return send_error_json(req, 400, "invalid Character diagnostic masks");
+
+    return send_character_diag_state(req);
+}
+
+
+/* ============================================================
+ * Analog Character handler
+ * ============================================================ */
+
 static esp_err_t api_character_handler(httpd_req_t *req)
 {
-    char buf[384];
+    char buf[512];
     cJSON *body = parse_request_json(req, buf, sizeof(buf));
     if (!body)
         return send_error_json(req, 400, "invalid or empty json");
@@ -754,20 +617,12 @@ static esp_err_t api_character_handler(httpd_req_t *req)
             current.warmth_pct = 62.0f;
             current.detail_pct = 10.0f;
             current.drive_pct = 32.0f;
-            current.softness_pct = 55.0f;
-            current.air_pct = 22.0f;
-            current.memory_pct = 64.0f;
-            current.spectral_pct = 42.0f;
         } else if (m == DSP_CHARACTER_BRITISH) {
             current.enabled = true;
             current.mode = DSP_CHARACTER_BRITISH;
             current.warmth_pct = 34.0f;
             current.detail_pct = 18.0f;
             current.drive_pct = 18.0f;
-            current.softness_pct = 28.0f;
-            current.air_pct = 38.0f;
-            current.memory_pct = 30.0f;
-            current.spectral_pct = 58.0f;
         } else if (m == DSP_CHARACTER_CUSTOM) {
             current.mode = DSP_CHARACTER_CUSTOM;
         } else {
@@ -786,14 +641,20 @@ static esp_err_t api_character_handler(httpd_req_t *req)
     if (v && cJSON_IsNumber(v)) current.detail_pct = (float)v->valuedouble;
     v = cJSON_GetObjectItem(body, "drive_pct");
     if (v && cJSON_IsNumber(v)) current.drive_pct = (float)v->valuedouble;
-    v = cJSON_GetObjectItem(body, "softness_pct");
-    if (v && cJSON_IsNumber(v)) current.softness_pct = (float)v->valuedouble;
-    v = cJSON_GetObjectItem(body, "air_pct");
-    if (v && cJSON_IsNumber(v)) current.air_pct = (float)v->valuedouble;
-    v = cJSON_GetObjectItem(body, "memory_pct");
-    if (v && cJSON_IsNumber(v)) current.memory_pct = (float)v->valuedouble;
-    v = cJSON_GetObjectItem(body, "spectral_pct");
-    if (v && cJSON_IsNumber(v)) current.spectral_pct = (float)v->valuedouble;
+
+    v = cJSON_GetObjectItem(body, "harmonic_interaction_enabled");
+    if (v && cJSON_IsBool(v))
+        current.harmonic_interaction_enabled = cJSON_IsTrue(v);
+    v = cJSON_GetObjectItem(body, "harmonic_interaction_pct");
+    if (v && cJSON_IsNumber(v))
+        current.harmonic_interaction_pct = (float)v->valuedouble;
+
+    v = cJSON_GetObjectItem(body, "dynamic_saturation_enabled");
+    if (v && cJSON_IsBool(v))
+        current.dynamic_saturation_enabled = cJSON_IsTrue(v);
+    v = cJSON_GetObjectItem(body, "dynamic_saturation_pct");
+    if (v && cJSON_IsNumber(v))
+        current.dynamic_saturation_pct = (float)v->valuedouble;
 
     cJSON_Delete(body);
 
@@ -1211,7 +1072,7 @@ static esp_err_t api_master_handler(
 //
 // Save cả:
 //   1. PEQ preset
-//   2. Harmonic Exciter
+//   2. Analog Character V5 Lite
 //
 // Vì vậy nút Save trên /dsp sẽ lưu toàn bộ cấu hình.
 // ---------------------------------------------------------------------------
@@ -1253,18 +1114,6 @@ static esp_err_t api_save_handler(
             "nvs preset write failed"
         );
 
-
-    // Save Harmonic Exciter
-
-    err =
-        dsp_engine_save_exciter();
-
-    if (err != ESP_OK)
-        return send_error_json(
-            req,
-            500,
-            "nvs exciter write failed"
-        );
 
     err = dsp_engine_save_character();
     if (err != ESP_OK)
@@ -1351,15 +1200,21 @@ esp_err_t dsp_api_register(
         },
 
         {
-            .uri = "/api/dsp/exciter",
-            .method = HTTP_POST,
-            .handler = api_exciter_handler
-        },
-
-        {
             .uri = "/api/dsp/character",
             .method = HTTP_POST,
             .handler = api_character_handler
+        },
+
+        {
+            .uri = "/api/dsp/character_diag",
+            .method = HTTP_GET,
+            .handler = api_character_diag_handler
+        },
+
+        {
+            .uri = "/api/dsp/character_diag",
+            .method = HTTP_POST,
+            .handler = api_character_diag_handler
         },
 
         {

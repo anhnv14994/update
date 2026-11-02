@@ -406,7 +406,7 @@ httpd_handle_t web_server_start(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
-    config.max_uri_handlers = 28;
+    config.max_uri_handlers = 40;
     config.stack_size = 8192;
 
     httpd_handle_t server = NULL;

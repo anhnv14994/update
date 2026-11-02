@@ -44,32 +44,13 @@ static void dsp_pcm_callback(
 {
     (void)user_ctx;
 
-    size_t out_len = len;
-
-    const uint8_t *processed =
-        dsp_engine_process(
-            data,
-            len,
-            &out_len);
-
-    if (!processed)
-        return;
-
     /*
-     * dsp_engine_process() thường trả về s_scratch.
-     * Copy PCM đã xử lý ngược vào DSP frame.
-     *
-     * audio_buffer truyền frame->data vào callback.
-     * Buffer thực tế là writable dù API khai báo const.
+     * audio_buffer passes the writable DSP-ring frame here.
+     * Process it directly: no scratch-to-frame memcpy on the hot path.
+     * The callback type is const for API compatibility with older users.
      */
-    if (processed != data &&
-        out_len > 0 &&
-        out_len <= len) {
-
-        memcpy(
-            (void *)data,
-            processed,
-            out_len);
+    if (data && len >= 4) {
+        dsp_engine_process_inplace((uint8_t *)data, len);
     }
 }
 
@@ -336,13 +317,24 @@ void app_main(void)
         }
     }
 
-    // Start web server for configuration
+    // Start web server for configuration and register all feature routes.
     web_server = web_server_start();
 
-    // Register the DSP Sound UI + JSON API (/dsp, /api/dsp/*) on the same
-    // server, without touching web_server.c itself.
-    dsp_api_register(web_server);
-    web_log_register(web_server);
+    if (!web_server) {
+        ESP_LOGE(TAG, "Web server unavailable; /log and /dsp routes not registered");
+    } else {
+        // Register log endpoints first so they keep their slots if the URI
+        // handler limit is ever reduced accidentally.
+        esp_err_t log_err = web_log_register(web_server);
+        if (log_err != ESP_OK) {
+            ESP_LOGE(TAG, "Web log registration failed: %s", esp_err_to_name(log_err));
+        }
+
+        esp_err_t dsp_err = dsp_api_register(web_server);
+        if (dsp_err != ESP_OK) {
+            ESP_LOGE(TAG, "DSP API registration failed: %s", esp_err_to_name(dsp_err));
+        }
+    }
     // Wait for WiFi connection (give it some time)
     ESP_LOGI(TAG, "Waiting for network...");
     vTaskDelay(pdMS_TO_TICKS(2000));

@@ -1,5 +1,5 @@
 #include "stereo_spatial.h"
-
+#include "esp_attr.h"
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
@@ -708,7 +708,7 @@ static inline void process_biquad_block(
  * MAIN AUDIO PROCESSOR
  * ============================================================ */
 
-void stereo_spatial_process_i16(
+void IRAM_ATTR stereo_spatial_process_i16(
     stereo_spatial_ctx_t *ctx,
     int16_t *buffer,
     size_t frames)

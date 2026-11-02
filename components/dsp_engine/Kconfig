@@ -1,0 +1,36 @@
+menu "DSP Engine"
+
+config DSP_CHARACTER_PROFILE
+    bool "Enable Analog Character per-stage cycle profiling"
+    default n
+    help
+        Enable per-stage cycle-counter instrumentation for Character DSP.
+        This adds cycle-counter reads inside the sample loop and is intended
+        only for profiling builds. Keep disabled for normal playback.
+
+
+config DSP_PEQ_USE_ESP_DSP
+    bool "Use ESP-DSP stereo block biquad for PEQ"
+    depends on IDF_TARGET_ESP32S3
+    default n
+    help
+        Experimental Phase 3 backend. Converts each PCM block to interleaved
+        float, then runs the PEQ cascade with ESP-DSP's stereo biquad kernel.
+        This preserves the filter coefficients but uses a DF-II state
+        realization instead of the native transposed DF-II implementation.
+        Keep disabled for the reference backend. Enable for A/B CPU and
+        listening tests before making it the default.
+
+config DSP_PEQ_USE_ESP_DSP_AES3
+    bool "Use ESP-DSP dual-mono biquad (ESP32-S3 AES3 eligible)"
+    depends on IDF_TARGET_ESP32S3 && !DSP_PEQ_USE_ESP_DSP
+    default n
+    help
+        Experimental A/B backend. Deinterleaves PCM into two planar float
+        channels and calls dsps_biquad_f32 for each channel. With a recent
+        ESP-DSP package and optimized kernels enabled, the S3-specific
+        dsps_biquad_f32_aes3 assembly can be selected. Otherwise the library
+        falls back to another available implementation. Keep disabled until
+        measured against the native and interleaved-stereo backends.
+
+endmenu

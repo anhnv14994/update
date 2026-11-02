@@ -360,6 +360,39 @@ input[type=range]::-moz-range-thumb{
   margin-top:4px;
 }
 
+
+/* CHARACTER DIAGNOSTICS */
+.character-diag{
+  margin-top:14px;
+  padding:12px;
+  border:1px solid var(--line);
+  border-radius:9px;
+  background:#101318;
+}
+.character-diag-title{
+  color:var(--accent);
+  font-size:11px;
+  font-weight:700;
+  letter-spacing:1.2px;
+  text-transform:uppercase;
+  margin:10px 0 4px;
+}
+.character-diag .feature{
+  padding:9px 0;
+}
+.character-diag .feature:first-of-type{
+  margin-top:4px;
+}
+.diag-stats{
+  margin-top:10px;
+  padding:9px;
+  border-radius:7px;
+  background:var(--panel2);
+  color:var(--text);
+  font:10px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;
+  overflow-wrap:anywhere;
+}
+
 /* SWITCH */
 
 .switch{
@@ -492,6 +525,9 @@ input[type=range]::-moz-range-thumb{
 
   <div class="titlebar">
     DSP <span>SOUND</span>
+    <div style="font-size:9px;letter-spacing:1.5px;color:#e0b155;margin-top:6px;">
+      CHARACTER DIAGNOSTIC BUILD · A/B TEST
+    </div>
   </div>
 
   <a class="back-link" href="/">
@@ -528,133 +564,14 @@ input[type=range]::-moz-range-thumb{
   </div>
 
 
-  <!-- BASS HARMONIC EXCITER -->
-
-  <div class="section">
-
-    <div class="peq-title">
-      Bass Harmonic Exciter
-    </div>
-
-    <div class="peq-subtitle">
-      Tạo nhẹ harmonic từ bass sâu để tăng cảm giác rền, độ sâu và body
-      mà không cần tăng mạnh bass cơ bản.
-    </div>
-
-
-    <!-- ENABLE -->
-
-    <div class="feature" style="border-top:none; margin-top:0;">
-
-      <div class="feature-text">
-
-        <div
-          class="feature-name tooltip"
-          data-tip="Bass Exciter tạo H2/H3 từ thành phần bass thấp. H2 thiên về body và cảm giác sâu/rền; H3 thêm texture.">
-          Bass Exciter
-        </div>
-
-        <div class="feature-info">
-          H2 = Depth / Body · H3 = Texture
-        </div>
-
-      </div>
-
-      <label class="switch">
-
-        <input
-          type="checkbox"
-          id="exciterEnabled">
-
-        <span class="slider-toggle"></span>
-
-      </label>
-
-    </div>
-
-
-    <!-- H2 -->
-
-    <div class="band">
-
-      <div class="row-label">
-        <span>H2 — Depth / Body</span>
-        <b id="exciterH2Val">6.0%</b>
-      </div>
-
-      <input
-        class="exciter-range"
-        type="range"
-        id="exciterH2"
-        min="0"
-        max="12"
-        step="0.1"
-        value="6">
-
-    </div>
-
-
-    <!-- H3 -->
-
-    <div class="band">
-
-      <div class="row-label">
-        <span>H3 — Texture</span>
-        <b id="exciterH3Val">2.0%</b>
-      </div>
-
-      <input
-        class="exciter-range"
-        type="range"
-        id="exciterH3"
-        min="0"
-        max="6"
-        step="0.1"
-        value="2">
-
-    </div>
-
-
-    <!-- CROSSOVER -->
-
-    <div class="band">
-
-      <div class="row-label">
-        <span>Crossover</span>
-        <b id="exciterXoverVal">60 Hz</b>
-      </div>
-
-      <input
-        class="exciter-range"
-        type="range"
-        id="exciterXover"
-        min="30"
-        max="100"
-        step="1"
-        value="60">
-
-    </div>
-
-
-    <div class="exciter-note">
-      <strong>Gợi ý:</strong>
-      H2 là núm chính để tăng độ sâu/rền của bass.
-      H3 chỉ nên tăng nhẹ để thêm texture.
-      Mức bắt đầu tốt: <strong>H2 5–7%</strong>, <strong>H3 1–2%</strong>.
-      Nếu bass bị ù hoặc tiếng hơi gằn, giảm H3 trước; sau đó mới giảm H2.
-    </div>
-
-  </div>
-
-
   <!-- ANALOG CHARACTER -->
 
   <div class="section">
 
-    <div class="peq-title">Analog Character</div>
+    <div class="peq-title">Analog Character <span style="font-size:12px;opacity:.65;">V5.1 Lite</span></div>
 
     <div class="peq-subtitle">
-      Preamp DSP 3 tầng với saturation phụ thuộc tần số và memory feedback có kiểm soát. A thiên về body/mượt; B giữ độ tự nhiên và thoáng. Độc lập với Bass Harmonic Exciter.
+      Preamp DSP V5.1 Lite giữ nguyên 2 tầng nonlinear. Mean-square detector cải thiện tracking tín hiệu nhiều thành phần; Harmonic Interaction và Dynamic Saturation là hai tùy chọn độc lập, mặc định tắt.
     </div>
 
     <div class="presets" id="characterProfiles">
@@ -671,7 +588,7 @@ input[type=range]::-moz-range-thumb{
     <div class="feature">
       <div class="feature-text">
         <div class="feature-name">Analog Character</div>
-        <div class="feature-info">Bật/tắt tầng tạo màu âm, không ảnh hưởng PEQ và Exciter</div>
+        <div class="feature-info">Bật/tắt hai tầng tạo màu âm; PEQ và limiter vẫn hoạt động độc lập.</div>
       </div>
       <label class="switch">
         <input type="checkbox" id="characterEnabled">
@@ -694,31 +611,83 @@ input[type=range]::-moz-range-thumb{
       <input class="exciter-range" type="range" id="characterDrive" min="0" max="100" step="1" value="0">
     </div>
 
+    <div class="feature">
+      <div class="feature-text">
+        <div class="feature-name">Harmonic Interaction</div>
+        <div class="feature-info">Năng lượng low-mid của Stage 1 điều tiết mật độ hài Stage 2, giúp kiểm soát low-mid buildup.</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="characterInteractionEnabled">
+        <span class="slider-toggle"></span>
+      </label>
+    </div>
     <div class="band">
-      <div class="row-label"><span>Softness — Dynamic Softening</span><b id="characterSoftnessVal">0%</b></div>
-      <input class="exciter-range" type="range" id="characterSoftness" min="0" max="100" step="1" value="0">
+      <div class="row-label"><span>Interaction amount</span><b id="characterInteractionVal">0%</b></div>
+      <input class="exciter-range" type="range" id="characterInteraction" min="0" max="100" step="1" value="0">
     </div>
 
+    <div class="feature">
+      <div class="feature-text">
+        <div class="feature-name">Dynamic Saturation</div>
+        <div class="feature-info">Tăng lượng hài theo năng lượng tín hiệu; không nén hoặc tự động giảm gain dry.</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="characterDynamicEnabled">
+        <span class="slider-toggle"></span>
+      </label>
+    </div>
     <div class="band">
-      <div class="row-label"><span>Air — High Frequency Openness</span><b id="characterAirVal">0%</b></div>
-      <input class="exciter-range" type="range" id="characterAir" min="0" max="100" step="1" value="0">
+      <div class="row-label"><span>Dynamic amount</span><b id="characterDynamicVal">0%</b></div>
+      <input class="exciter-range" type="range" id="characterDynamic" min="0" max="100" step="1" value="0">
     </div>
 
-    <div class="band">
-      <div class="row-label"><span>Memory — Bias / Charge / Supply</span><b id="characterMemoryVal">50%</b></div>
-      <input class="exciter-range" type="range" id="characterMemory" min="0" max="100" step="1" value="50">
-    </div>
 
-    <div class="band">
-      <div class="row-label"><span>Spectral — Stage Balance</span><b id="characterSpectralVal">50%</b></div>
-      <input class="exciter-range" type="range" id="characterSpectral" min="0" max="100" step="1" value="50">
-    </div>
+
+
 
     <div class="exciter-note">
       <strong>A — Tube Warm:</strong> tăng body và độ dày vocal, H2 trội hơn.<br>
       <strong>B — British Natural:</strong> nhẹ hơn, giữ độ thoáng và articulation.<br>
-      Chọn A/B để nạp thiết lập gợi ý; sau đó kéo slider để tinh chỉnh. Thay đổi áp dụng realtime,
+      Hai modifier mới mặc định OFF; bật từng mục để A/B độc lập. Thay đổi áp dụng realtime,
       nhấn <strong>Save preset</strong> để lưu vào NVS.
+    </div>
+
+    <div class="character-diag">
+      <div class="character-diag-title">A/B Diagnostics · V5.1 Lite · Session only</div>
+      <div class="peq-subtitle">Các switch A/B phía dưới chỉ dùng đo kiểm realtime, không ghi vào NVS. V5.1 vẫn giữ đúng 2 Stage.</div>
+
+      <div class="character-diag-title">Nonlinear stages</div>
+      <div class="feature">
+        <div class="feature-text"><div class="feature-name">Stage 1 · Low-mid body</div><div class="feature-info">90–650 Hz</div></div>
+        <label class="switch"><input type="checkbox" id="charStage1" checked><span class="slider-toggle"></span></label>
+      </div>
+      <div class="feature">
+        <div class="feature-text"><div class="feature-name">Stage 2 · Vocal core</div><div class="feature-info">320 Hz–2.1 kHz</div></div>
+        <label class="switch"><input type="checkbox" id="charStage2" checked><span class="slider-toggle"></span></label>
+      </div>
+
+      <div class="character-diag-title">Parameter bypass</div>
+      <div class="feature">
+        <div class="feature-text"><div class="feature-name">Warmth</div><div class="feature-info">H2 / vocal body</div></div>
+        <label class="switch"><input type="checkbox" id="charFeatWarmth" checked><span class="slider-toggle"></span></label>
+      </div>
+      <div class="feature">
+        <div class="feature-text"><div class="feature-name">Detail</div><div class="feature-info">H3 / texture</div></div>
+        <label class="switch"><input type="checkbox" id="charFeatDetail" checked><span class="slider-toggle"></span></label>
+      </div>
+      <div class="feature">
+        <div class="feature-text"><div class="feature-name">Drive</div><div class="feature-info">Harmonic drive multiplier · OFF = unity</div></div>
+        <label class="switch"><input type="checkbox" id="charFeatDrive" checked><span class="slider-toggle"></span></label>
+      </div>
+
+      <div class="character-diag-title">Stage processing time · µs per 352-sample frame</div>
+      <div class="peq-subtitle">Cycle-counter elapsed time; may include scheduler preemption, so compare relative stage cost.</div>
+      <div class="exciter-note">
+        Stage 1: <strong id="charStage1Stats">0 / 0 µs</strong><br>
+        Stage 2: <strong id="charStage2Stats">0 / 0 µs</strong><br>
+        <span id="charDiagBlocks">0 measured frames</span>
+      </div>
+
     </div>
 
   </div>
@@ -1476,233 +1445,6 @@ document
 
 
 /* =========================================================
-   BASS HARMONIC EXCITER
-   ========================================================= */
-
-function renderExciter(){
-
-  const e =
-    state && state.exciter;
-
-  if(!e)
-    return;
-
-
-  const enabled =
-    !!e.enabled;
-
-  const h2 =
-    Number(e.h2_pct);
-
-  const h3 =
-    Number(e.h3_pct);
-
-  const xover =
-    Number(e.crossover_hz);
-
-
-  document
-    .getElementById("exciterEnabled")
-    .checked =
-      enabled;
-
-
-  document
-    .getElementById("exciterH2")
-    .value =
-      h2;
-
-
-  document
-    .getElementById("exciterH3")
-    .value =
-      h3;
-
-
-  document
-    .getElementById("exciterXover")
-    .value =
-      xover;
-
-
-  document
-    .getElementById("exciterH2Val")
-    .textContent =
-      `${h2.toFixed(1)}%`;
-
-
-  document
-    .getElementById("exciterH3Val")
-    .textContent =
-      `${h3.toFixed(1)}%`;
-
-
-  document
-    .getElementById("exciterXoverVal")
-    .textContent =
-      `${Math.round(xover)} Hz`;
-}
-
-
-/*
- * Debounce:
- * slider vẫn chạy mượt trên trình duyệt,
- * nhưng ESP32 không bị nhận hàng chục POST/giây.
- */
-
-let exciterTimer = null;
-
-
-function scheduleExciterUpdate(){
-
-  clearTimeout(exciterTimer);
-
-  exciterTimer =
-    setTimeout(
-      updateExciter,
-      120
-    );
-}
-
-
-async function updateExciter(){
-
-  const enabled =
-    document
-      .getElementById("exciterEnabled")
-      .checked;
-
-  const h2 =
-    parseFloat(
-      document
-        .getElementById("exciterH2")
-        .value
-    );
-
-  const h3 =
-    parseFloat(
-      document
-        .getElementById("exciterH3")
-        .value
-    );
-
-  const xover =
-    parseFloat(
-      document
-        .getElementById("exciterXover")
-        .value
-    );
-
-
-  try{
-
-    state =
-      await api(
-        "/api/dsp/exciter",
-        {
-          enabled:enabled,
-          h2_pct:h2,
-          h3_pct:h3,
-          crossover_hz:xover
-        }
-      );
-
-    renderExciter();
-
-  }catch(err){
-
-    console.error(err);
-
-    setStatus(
-      "Không thể cập nhật Bass Exciter"
-    );
-
-  }
-}
-
-
-/* ENABLE */
-
-document.getElementById("exciterEnabled").addEventListener("change", async e => {
-  try {
-    state = await api("/api/dsp/exciter", {enabled:e.target.checked});
-    renderExciter();
-    setStatus(e.target.checked ? "Bass Exciter ON" : "Bass Exciter OFF — PEQ vẫn hoạt động");
-  } catch(err) {
-    console.error(err);
-    setStatus("Không thể đổi Bass Exciter");
-    await refresh();
-  }
-});
-
-
-/* H2 */
-
-document
-  .getElementById("exciterH2")
-  .addEventListener(
-    "input",
-    e => {
-
-      const value =
-        parseFloat(e.target.value);
-
-      document
-        .getElementById("exciterH2Val")
-        .textContent =
-          `${value.toFixed(1)}%`;
-
-      scheduleExciterUpdate();
-
-    }
-  );
-
-
-/* H3 */
-
-document
-  .getElementById("exciterH3")
-  .addEventListener(
-    "input",
-    e => {
-
-      const value =
-        parseFloat(e.target.value);
-
-      document
-        .getElementById("exciterH3Val")
-        .textContent =
-          `${value.toFixed(1)}%`;
-
-      scheduleExciterUpdate();
-
-    }
-  );
-
-
-/* CROSSOVER */
-
-document
-  .getElementById("exciterXover")
-  .addEventListener(
-    "input",
-    e => {
-
-      const value =
-        parseFloat(e.target.value);
-
-      document
-        .getElementById("exciterXoverVal")
-        .textContent =
-          `${Math.round(value)} Hz`;
-
-      scheduleExciterUpdate();
-
-    }
-  );
-
-
-/* =========================================================
    HIGH SHELF
    ========================================================= */
 
@@ -1828,11 +1570,12 @@ document
 const characterControls = [
   ["characterWarmth", "warmth_pct", "characterWarmthVal"],
   ["characterDetail", "detail_pct", "characterDetailVal"],
-  ["characterDrive", "drive_pct", "characterDriveVal"],
-  ["characterSoftness", "softness_pct", "characterSoftnessVal"],
-  ["characterAir", "air_pct", "characterAirVal"],
-  ["characterMemory", "memory_pct", "characterMemoryVal"],
-  ["characterSpectral", "spectral_pct", "characterSpectralVal"]];
+  ["characterDrive", "drive_pct", "characterDriveVal"]];
+
+const characterModifierControls = [
+  ["characterInteraction", "harmonic_interaction_pct", "characterInteractionVal"],
+  ["characterDynamic", "dynamic_saturation_pct", "characterDynamicVal"]
+];
 
 let characterTimer = null;
 
@@ -1842,11 +1585,16 @@ function renderCharacter(){
 
   document.getElementById("characterEnabled").checked = !!c.enabled;
 
-  characterControls.forEach(([inputId, key, valueId]) => {
+  characterControls.concat(characterModifierControls).forEach(([inputId, key, valueId]) => {
     const value = Math.max(0, Math.min(100, Number(c[key] ?? 0)));
     document.getElementById(inputId).value = value;
     document.getElementById(valueId).textContent = `${Math.round(value)}%`;
   });
+
+  document.getElementById("characterInteractionEnabled").checked =
+    !!c.harmonic_interaction_enabled;
+  document.getElementById("characterDynamicEnabled").checked =
+    !!c.dynamic_saturation_enabled;
 
   const mode = Number(c.mode ?? 0);
   document.getElementById("characterTube").classList.toggle("active", mode === 1);
@@ -1881,9 +1629,13 @@ document.getElementById("characterEnabled").addEventListener("change", async e =
 
 function characterPayload(){
   const payload = {mode:0}; // any manual edit switches the profile label to CUSTOM
-  characterControls.forEach(([inputId, key]) => {
+  characterControls.concat(characterModifierControls).forEach(([inputId, key]) => {
     payload[key] = Number(document.getElementById(inputId).value);
   });
+  payload.harmonic_interaction_enabled =
+    document.getElementById("characterInteractionEnabled").checked;
+  payload.dynamic_saturation_enabled =
+    document.getElementById("characterDynamicEnabled").checked;
   return payload;
 }
 
@@ -1902,7 +1654,7 @@ async function updateCharacter(){
   }
 }
 
-characterControls.forEach(([inputId, key, valueId]) => {
+characterControls.concat(characterModifierControls).forEach(([inputId, key, valueId]) => {
   const slider = document.getElementById(inputId);
   slider.addEventListener("input", e => {
     document.getElementById(valueId).textContent = `${Math.round(Number(e.target.value))}%`;
@@ -1913,6 +1665,78 @@ characterControls.forEach(([inputId, key, valueId]) => {
     updateCharacter();
   });
 });
+
+["characterInteractionEnabled", "characterDynamicEnabled"].forEach(id => {
+  document.getElementById(id).addEventListener("change", updateCharacter);
+});
+
+
+/* =========================================================
+   ANALOG CHARACTER DIAGNOSTICS
+   ========================================================= */
+
+const characterStageSwitches = [
+  ["charStage1", 1],
+  ["charStage2", 2]
+];
+
+const characterFeatureSwitches = [
+  ["charFeatWarmth", 1],
+  ["charFeatDetail", 2],
+  ["charFeatDrive", 4]
+];
+
+function renderCharacterDiagnostics(d){
+  if(!d) return;
+  characterStageSwitches.forEach(([id, bit]) => {
+    document.getElementById(id).checked = (d.stage_mask & bit) !== 0;
+  });
+  characterFeatureSwitches.forEach(([id, bit]) => {
+    document.getElementById(id).checked = (d.feature_mask & bit) !== 0;
+  });
+
+  const avg = d.stage_avg_us || [];
+  const max = d.stage_max_us || [];
+  document.getElementById("charStage1Stats").textContent =
+    `${Number(avg[0] || 0)} / ${Number(max[0] || 0)} µs avg / max`;
+  document.getElementById("charStage2Stats").textContent =
+    `${Number(avg[1] || 0)} / ${Number(max[1] || 0)} µs avg / max`;
+  document.getElementById("charDiagBlocks").textContent =
+    `${Number(d.blocks || 0)} measured audio frames · ${Number(d.cpu_mhz || 0)} MHz`;
+
+}
+
+async function refreshCharacterDiagnostics(){
+  try{
+    const d = await api("/api/dsp/character_diag");
+    renderCharacterDiagnostics(d);
+  }catch(err){
+    console.error("Character diagnostic API unavailable", err);
+  }
+}
+
+async function updateCharacterDiagnostics(){
+  const stage_mask = characterStageSwitches.reduce((m, [id, bit]) =>
+    m | (document.getElementById(id).checked ? bit : 0), 0);
+  const feature_mask = characterFeatureSwitches.reduce((m, [id, bit]) =>
+    m | (document.getElementById(id).checked ? bit : 0), 0);
+  try{
+    const d = await api("/api/dsp/character_diag", {stage_mask, feature_mask});
+    renderCharacterDiagnostics(d);
+    setStatus("Character diagnostic updated");
+  }catch(err){
+    console.error(err);
+    setStatus("Không thể cập nhật diagnostic switches");
+    await refreshCharacterDiagnostics();
+  }
+}
+
+[...characterStageSwitches, ...characterFeatureSwitches].forEach(([id]) => {
+  document.getElementById(id).addEventListener("change", updateCharacterDiagnostics);
+});
+
+refreshCharacterDiagnostics();
+setInterval(refreshCharacterDiagnostics, 2500);
 
 
 /* =========================================================
@@ -2192,7 +2016,7 @@ document
         );
 
         setStatus(
-          "Đã lưu preset + Exciter + Analog Character V4 vào flash (NVS)"
+          "Đã lưu preset + Analog Character V5.1 Lite vào flash (NVS)"
         );
 
       }catch(err){
@@ -2323,7 +2147,6 @@ function renderAll(){
   renderPresets();
   renderBands();
   renderMaster();
-  renderExciter();
   renderCharacter();
   renderShelf();
   renderSpatial();
