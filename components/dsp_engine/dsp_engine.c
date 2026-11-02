@@ -2175,10 +2175,18 @@ const uint8_t *dsp_engine_process(
      * this PCM block. The detector, ADAA and nonlinear transfer are unchanged.
      */
     const float character_control_smooth = 0.00188786049f;
-    const float block_decay = powf(
-        1.0f - character_control_smooth, (float)frames);
-    const float block_alpha = 1.0f - block_decay;
-    const float inv_frames = 1.0f / (float)frames;
+    static size_t cached_control_frames = 0;
+    static float cached_block_alpha = 0.0f;
+    static float cached_inv_frames = 0.0f;
+    if (frames != cached_control_frames) {
+        const float block_decay = powf(
+            1.0f - character_control_smooth, (float)frames);
+        cached_block_alpha = 1.0f - block_decay;
+        cached_inv_frames = 1.0f / (float)frames;
+        cached_control_frames = frames;
+    }
+    const float block_alpha = cached_block_alpha;
+    const float inv_frames = cached_inv_frames;
 
     character_state_t *cs = &s_character_state;
 
