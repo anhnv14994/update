@@ -164,8 +164,7 @@ typedef struct {
     biquad_coef_t input_hpf;
     biquad_coef_t input_lpf;
     biquad_coef_t residual_hpf;
-    float ms_attack_alpha;
-    float ms_release_alpha;
+    float ms_alpha;
 } character_stage_filter_t;
 
 typedef struct {
@@ -680,8 +679,7 @@ static void rebuild_character_filters(void)
     /* V5: Stage 1 body (90–650 Hz), Stage 2 vocal core (320 Hz–2.1 kHz). */
     static const float source_hp[CHARACTER_STAGE_COUNT] = { 90.0f, 320.0f };
     static const float source_lp[CHARACTER_STAGE_COUNT] = { 650.0f, 2100.0f };
-    static const float ms_attack_ms[CHARACTER_STAGE_COUNT] = { 10.0f, 7.0f };
-    static const float ms_release_ms[CHARACTER_STAGE_COUNT] = { 120.0f, 90.0f };
+    static const float mean_square_ms[CHARACTER_STAGE_COUNT] = { 20.0f, 18.0f };
 
     for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
         calc_butterworth_hpf_q(DSP_SAMPLE_RATE_HZ, source_hp[stage],
@@ -690,10 +688,8 @@ static void rebuild_character_filters(void)
                                0.70710678118f, &next.stage[stage].input_lpf);
         calc_butterworth_hpf_q(DSP_SAMPLE_RATE_HZ, 15.0f,
                                0.70710678118f, &next.stage[stage].residual_hpf);
-        next.stage[stage].ms_attack_alpha = 1.0f - expf(
-            -1.0f / (ms_attack_ms[stage] * 0.001f * DSP_SAMPLE_RATE_HZ));
-        next.stage[stage].ms_release_alpha = 1.0f - expf(
-            -1.0f / (ms_release_ms[stage] * 0.001f * DSP_SAMPLE_RATE_HZ));
+        next.stage[stage].ms_alpha = 1.0f - expf(
+            -1.0f / (mean_square_ms[stage] * 0.001f * DSP_SAMPLE_RATE_HZ));
     }
 
     if (s_lock)
@@ -2294,9 +2290,7 @@ const uint8_t *dsp_engine_process(
                             band, &fc->input_lpf, &ss->input_lpf[ch]);
 
                         const float band_power = band * band;
-                        const float ms_alpha = (band_power > ss->mean_square[ch])
-                            ? fc->ms_attack_alpha : fc->ms_release_alpha;
-                        ss->mean_square[ch] += ms_alpha *
+                        ss->mean_square[ch] += fc->ms_alpha *
                             (band_power - ss->mean_square[ch]);
                         const float mean_square = fmaxf(0.0f, ss->mean_square[ch]);
 
