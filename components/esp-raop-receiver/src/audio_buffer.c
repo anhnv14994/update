@@ -38,8 +38,8 @@ static const char *TAG = "audio_buffer";
 
 #define DSP_PIPE_FRAMES           16
 #define DSP_TASK_STACK_SIZE       8192
-#define DSP_TASK_PRIORITY         2
-/* Share Core 1 with the higher-priority output task; keep Core 0 freer for Wi-Fi/RAOP. */
+/* DSP gets first access to the 16-frame pipeline; it yields when that queue is full. */
+#define DSP_TASK_PRIORITY         4
 #define DSP_TASK_CORE             1
 
 #define AUDIO_TASK_STACK_SIZE     12288
@@ -84,6 +84,7 @@ typedef struct {
     _Atomic uint32_t dsp_drops;
     _Atomic uint32_t dsp_total_us;
     _Atomic uint32_t dsp_max_us;
+    _Atomic uint32_t dsp_total_samples;
     uint32_t last_log_ms;
 } audio_stats_t;
 
@@ -244,6 +245,7 @@ static void stats_reset(void)
     atomic_store_explicit(&out_stats.dsp_drops, 0, memory_order_relaxed);
     atomic_store_explicit(&out_stats.dsp_total_us, 0, memory_order_relaxed);
     atomic_store_explicit(&out_stats.dsp_max_us, 0, memory_order_relaxed);
+    atomic_store_explicit(&out_stats.dsp_total_samples, 0, memory_order_relaxed);
     out_stats.last_log_ms = gettime_ms();
 }
 
@@ -586,6 +588,11 @@ static void audio_dsp_task(void *arg)
             atomic_fetch_add_explicit(
                 &out_stats.dsp_total_us,
                 dsp_elapsed_us,
+                memory_order_relaxed);
+
+            atomic_fetch_add_explicit(
+                &out_stats.dsp_total_samples,
+                (uint32_t)(dst->len / SAMPLE_BYTES),
                 memory_order_relaxed);
 
             uint32_t previous_max =
@@ -1325,6 +1332,18 @@ static void audio_output_task(void *arg)
             uint32_t dsp_avg_us =
                 tap_calls ? (dsp_total_us / tap_calls) : 0;
 
+            uint32_t dsp_total_samples =
+                atomic_load_explicit(
+                    &out_stats.dsp_total_samples,
+                    memory_order_relaxed);
+
+            uint32_t dsp_avg_samples =
+                tap_calls ? (dsp_total_samples / tap_calls) : 0;
+
+            uint32_t dsp_budget_us =
+                (uint32_t)(((uint64_t)dsp_avg_samples * 1000000ULL) /
+                           SAMPLE_RATE_HZ);
+
             uint32_t dsp_waits =
                 atomic_load_explicit(
                     &out_stats.dsp_waits,
@@ -1351,6 +1370,8 @@ static void audio_output_task(void *arg)
                 "tap=%u "
                 "dsp_avg=%u us "
                 "dsp_max=%u us "
+                "frame=%u samples "
+                "budget=%u us "
                 "dsp_wait=%u "
                 "dsp_drop=%u "
                 "dma_lead=%d ms "
@@ -1364,6 +1385,8 @@ static void audio_output_task(void *arg)
                 tap_calls,
                 dsp_avg_us,
                 dsp_max_us,
+                dsp_avg_samples,
+                dsp_budget_us,
                 dsp_waits,
                 dsp_drops,
                 dma_lead,
