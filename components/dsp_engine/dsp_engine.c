@@ -34,53 +34,6 @@ static const char *TAG = "dsp_engine";
 #define DSP_PRESET_VERSION   2u
 
 
-/* ============================================================
- * Exciter
- * ============================================================ */
-
-#define EXC_H2_MIN              0.00f
-#define EXC_H2_MAX              0.12f
-
-#define EXC_H3_MIN              0.00f
-#define EXC_H3_MAX              0.06f
-
-#define EXC_CROSSOVER_MIN       30.0f
-#define EXC_CROSSOVER_MAX       100.0f
-
-/*
- * Harmonic band limiting.
- *
- * The HPF removes the low-frequency fundamental/DC component
- * which can otherwise leak into the nonlinear branch.
- */
-#define EXC_HARMONIC_HPF_HZ     65.0f
-#define EXC_HARMONIC_HPF_MAX_HZ  120.0f
-#define EXC_H2_LPF_HZ           160.0f
-#define EXC_H3_LPF_HZ           180.0f
-
-
-/*
- * Envelope follower.
- *
- * Used only as a gentle activity detector.  The nonlinear
- * generator is no longer fully normalized to this envelope;
- * this prevents low-level passages from being turned into a
- * nearly constant synthetic bass layer.
- */
-#define EXC_ENV_ATTACK_MS       5.0f
-#define EXC_ENV_RELEASE_MS      100.0f
-#define EXC_ENV_FLOOR           0.015f
-#define EXC_ENV_GATE             0.025f
-#define EXC_ENV_SOFT_START       0.080f
-#define EXC_NONLINEAR_DRIVE      1.75f
-
-
-/* Exciter NVS */
-
-#define DSP_EXCITER_MAGIC    0x45584331u   /* "EXC1" */
-#define DSP_NVS_KEY_EXCITER  "exciter"
-
-
 #define DSP_CHARACTER_MAGIC   0x43485231u   /* "CHR1" */
 #define DSP_CHARACTER_VERSION 2u
 #define DSP_NVS_KEY_CHARACTER "character"
@@ -114,12 +67,6 @@ typedef struct {
     uint32_t      version;
     dsp_preset_t  preset;
 } dsp_preset_blob_t;
-
-
-typedef struct {
-    uint32_t       magic;
-    dsp_exciter_t  exciter;
-} dsp_exciter_blob_t;
 
 
 typedef struct {
@@ -179,67 +126,6 @@ static size_t   s_scratch_len = 0;
 
 
 /* ============================================================
- * Exciter runtime
- * ============================================================ */
-
-static dsp_exciter_t s_exciter = {
-    .enabled      = true,
-    .h2_pct       = 0.06f,
-    .h3_pct       = 0.02f,
-    .crossover_hz = 60.0f,
-};
-
-
-/*
- * Exciter filter chain:
- *
- * bass
- *   -> crossover LPF
- *
- * harmonic branch:
- *
- * H2 -> HPF 65 -> LPF 160
- * H3 -> HPF 65 -> LPF 180
- */
-typedef struct {
-
-    biquad_coef_t bass_lpf;
-
-    biquad_coef_t h2_hpf;
-    biquad_coef_t h2_lpf;
-
-    biquad_coef_t h3_hpf;
-    biquad_coef_t h3_lpf;
-
-} exciter_filter_coef_t;
-
-
-typedef struct {
-
-    biquad_state_t bass_lpf;
-
-    biquad_state_t h2_hpf;
-    biquad_state_t h2_lpf;
-
-    biquad_state_t h3_hpf;
-    biquad_state_t h3_lpf;
-
-    /*
-     * Slow peak envelope of the low-frequency bass.
-     */
-    float envelope;
-
-} exciter_state_t;
-
-
-static exciter_filter_coef_t s_exciter_filter;
-
-static exciter_state_t s_exciter_state = {
-    .envelope = 0.0f,
-};
-
-
-/* ============================================================
  * Analog Character runtime
  * ============================================================ */
 
@@ -253,38 +139,25 @@ static dsp_character_t s_character = {
     .air_pct      = 0.0f,
 };
 
-#define CHARACTER_STAGE_COUNT 3
+#define CHARACTER_STAGE_COUNT 2
 
 typedef struct {
     biquad_coef_t input_hpf;
     biquad_coef_t input_lpf;
-    biquad_coef_t residual_hpf; /* remove nonlinear residual DC */
-    biquad_coef_t residual_lpf;
+    biquad_coef_t residual_hpf;
     float env_attack_alpha;
     float env_release_alpha;
-    float charge_attack_alpha;
-    float charge_release_alpha;
-    float bias_attack_alpha;
-    float bias_release_alpha;
-    float coupling_alpha;
 } character_stage_filter_t;
 
 typedef struct {
     character_stage_filter_t stage[CHARACTER_STAGE_COUNT];
-    float air_alpha;
-    float supply_attack_alpha;
-    float supply_release_alpha;
 } character_filter_coef_t;
 
 typedef struct {
     biquad_state_t input_hpf[2];
     biquad_state_t input_lpf[2];
     biquad_state_t residual_hpf[2];
-    biquad_state_t residual_lpf[2];
     float envelope[2];
-    float charge[2];
-    float coupling[2];
-    float bias[2];
     float prev_x[2];
     float prev_even_gain[2];
     float prev_odd_gain[2];
@@ -294,15 +167,9 @@ typedef struct {
 
 typedef struct {
     character_stage_state_t stage[CHARACTER_STAGE_COUNT];
-    float supply_envelope; /* stereo-linked slow shared supply memory */
     float warmth;
     float detail;
     float drive;
-    float softness;
-    float memory;
-    float spectral;
-    float air_gain;
-    float air_lp[2];
     bool running;
 } character_state_t;
 
@@ -319,7 +186,6 @@ static _Atomic uint32_t s_character_diag_stage_max_us[CHARACTER_STAGE_COUNT] = {
 
 /* Audio-task-owned state used to clear stale histories after a test bypass. */
 static uint8_t s_character_active_stage_mask = 0;
-static bool s_character_memory_feature_active = true;
 
 
 /* ============================================================
@@ -738,111 +604,9 @@ static void calc_butterworth_hpf_q(
 
 
 /* ============================================================
- * Exciter filter rebuild
- * ============================================================ */
-
-static void rebuild_exciter_filters(void)
-{
-    dsp_exciter_t exciter;
-    exciter_filter_coef_t next;
-
-    if (!s_lock)
-        return;
-
-    /* Snapshot settings first; all coefficient math is lock-free. */
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    exciter = s_exciter;
-    xSemaphoreGive(s_lock);
-
-    /*
-     * Bass crossover: clean 2nd-order Butterworth.
-     */
-    calc_butterworth_lpf_q(
-        DSP_SAMPLE_RATE_HZ,
-        exciter.crossover_hz,
-        0.70710678118f,
-        &next.bass_lpf
-    );
-
-    /*
-     * The harmonic branch must start above the actual bass
-     * fundamental region.  Keep a 65 Hz floor, but move the HPF
-     * upward with crossover so XO=80..100 Hz cannot re-introduce
-     * the fundamental as synthetic bass.
-     */
-    float harmonic_hpf =
-        fmaxf(
-            EXC_HARMONIC_HPF_HZ,
-            exciter.crossover_hz * 1.10f
-        );
-
-    harmonic_hpf =
-        clampf_local(
-            harmonic_hpf,
-            EXC_HARMONIC_HPF_HZ,
-            EXC_HARMONIC_HPF_MAX_HZ
-        );
-
-    /*
-     * H2: fundamental rejection + focused second-harmonic band.
-     * H3: fundamental rejection + slightly wider upper harmonic band.
-     * Q=0.707 keeps the sub character tight and avoids resonant bass.
-     */
-    calc_butterworth_hpf_q(
-        DSP_SAMPLE_RATE_HZ,
-        harmonic_hpf,
-        0.70710678118f,
-        &next.h2_hpf
-    );
-
-    calc_butterworth_lpf_q(
-        DSP_SAMPLE_RATE_HZ,
-        EXC_H2_LPF_HZ,
-        0.70710678118f,
-        &next.h2_lpf
-    );
-
-    calc_butterworth_hpf_q(
-        DSP_SAMPLE_RATE_HZ,
-        harmonic_hpf,
-        0.70710678118f,
-        &next.h3_hpf
-    );
-
-    calc_butterworth_lpf_q(
-        DSP_SAMPLE_RATE_HZ,
-        EXC_H3_LPF_HZ,
-        0.70710678118f,
-        &next.h3_lpf
-    );
-
-    /*
-     * Atomic coefficient publication.  The audio task snapshots
-     * the complete structure under the same mutex, so it can never
-     * see half of one filter set and half of another.
-     */
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_exciter_filter = next;
-    xSemaphoreGive(s_lock);
-}
-
-/* ============================================================
- * Reset Exciter states
- * ============================================================ */
-
-static void reset_exciter_states(void)
-{
-    memset(
-        &s_exciter_state,
-        0,
-        sizeof(s_exciter_state)
-    );
-}
-
-
-/* ============================================================
- * Analog Character V4.1 — low-cost polynomial ADAA
+ * Analog Character V5 Lite — two-stage low-cost ADAA
  * ============================================================
+
  * Each stage uses a band-limited source and an asymmetric quadratic/cubic
  * transfer. First-order ADAA is evaluated in closed form: no LUT access,
  * logarithm, or per-sample division. Slow bias/coupling/supply states provide
@@ -893,50 +657,24 @@ static void rebuild_character_filters(void)
     character_filter_coef_t next;
     memset(&next, 0, sizeof(next));
 
-    /* Stage 1: low-mid body. Stage 2: vocal core. Stage 3: presence texture.
-     * The residual paths remain parallel to each stage's dry signal. */
-    static const float source_hp[CHARACTER_STAGE_COUNT] = { 90.0f, 320.0f, 1700.0f };
-    static const float source_lp[CHARACTER_STAGE_COUNT] = { 650.0f, 2100.0f, 4600.0f };
-    static const float residual_lp[CHARACTER_STAGE_COUNT] = { 2600.0f, 7600.0f, 10500.0f };
-    static const float env_attack_ms[CHARACTER_STAGE_COUNT] = { 12.0f, 7.0f, 4.0f };
-    static const float env_release_ms[CHARACTER_STAGE_COUNT] = { 140.0f, 100.0f, 70.0f };
-    static const float charge_attack_ms[CHARACTER_STAGE_COUNT] = { 55.0f, 45.0f, 35.0f };
-    static const float charge_release_ms[CHARACTER_STAGE_COUNT] = { 520.0f, 420.0f, 320.0f };
-    static const float bias_attack_ms[CHARACTER_STAGE_COUNT] = { 12.0f, 9.0f, 6.0f };
-    static const float bias_release_ms[CHARACTER_STAGE_COUNT] = { 180.0f, 140.0f, 100.0f };
-    static const float coupling_hz[CHARACTER_STAGE_COUNT] = { 18.0f, 22.0f, 28.0f };
+    /* V5: Stage 1 body (90–650 Hz), Stage 2 vocal core (320 Hz–2.1 kHz). */
+    static const float source_hp[CHARACTER_STAGE_COUNT] = { 90.0f, 320.0f };
+    static const float source_lp[CHARACTER_STAGE_COUNT] = { 650.0f, 2100.0f };
+    static const float env_attack_ms[CHARACTER_STAGE_COUNT] = { 12.0f, 7.0f };
+    static const float env_release_ms[CHARACTER_STAGE_COUNT] = { 140.0f, 100.0f };
 
-    for (unsigned s = 0; s < CHARACTER_STAGE_COUNT; ++s) {
-        calc_butterworth_hpf_q(DSP_SAMPLE_RATE_HZ, source_hp[s],
-                               0.70710678118f, &next.stage[s].input_hpf);
-        calc_butterworth_lpf_q(DSP_SAMPLE_RATE_HZ, source_lp[s],
-                               0.70710678118f, &next.stage[s].input_lpf);
+    for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+        calc_butterworth_hpf_q(DSP_SAMPLE_RATE_HZ, source_hp[stage],
+                               0.70710678118f, &next.stage[stage].input_hpf);
+        calc_butterworth_lpf_q(DSP_SAMPLE_RATE_HZ, source_lp[stage],
+                               0.70710678118f, &next.stage[stage].input_lpf);
         calc_butterworth_hpf_q(DSP_SAMPLE_RATE_HZ, 15.0f,
-                               0.70710678118f, &next.stage[s].residual_hpf);
-        calc_butterworth_lpf_q(DSP_SAMPLE_RATE_HZ, residual_lp[s],
-                               0.70710678118f, &next.stage[s].residual_lpf);
-        next.stage[s].env_attack_alpha = 1.0f - expf(
-            -1.0f / (env_attack_ms[s] * 0.001f * DSP_SAMPLE_RATE_HZ));
-        next.stage[s].env_release_alpha = 1.0f - expf(
-            -1.0f / (env_release_ms[s] * 0.001f * DSP_SAMPLE_RATE_HZ));
-        next.stage[s].charge_attack_alpha = 1.0f - expf(
-            -1.0f / (charge_attack_ms[s] * 0.001f * DSP_SAMPLE_RATE_HZ));
-        next.stage[s].charge_release_alpha = 1.0f - expf(
-            -1.0f / (charge_release_ms[s] * 0.001f * DSP_SAMPLE_RATE_HZ));
-        next.stage[s].bias_attack_alpha = 1.0f - expf(
-            -1.0f / (bias_attack_ms[s] * 0.001f * DSP_SAMPLE_RATE_HZ));
-        next.stage[s].bias_release_alpha = 1.0f - expf(
-            -1.0f / (bias_release_ms[s] * 0.001f * DSP_SAMPLE_RATE_HZ));
-        next.stage[s].coupling_alpha = 1.0f - expf(
-            -2.0f * (float)M_PI * coupling_hz[s] / DSP_SAMPLE_RATE_HZ);
+                               0.70710678118f, &next.stage[stage].residual_hpf);
+        next.stage[stage].env_attack_alpha = 1.0f - expf(
+            -1.0f / (env_attack_ms[stage] * 0.001f * DSP_SAMPLE_RATE_HZ));
+        next.stage[stage].env_release_alpha = 1.0f - expf(
+            -1.0f / (env_release_ms[stage] * 0.001f * DSP_SAMPLE_RATE_HZ));
     }
-
-    next.air_alpha = 1.0f - expf(
-        -2.0f * (float)M_PI * 7800.0f / DSP_SAMPLE_RATE_HZ);
-    next.supply_attack_alpha = 1.0f - expf(
-        -1.0f / (0.250f * DSP_SAMPLE_RATE_HZ));
-    next.supply_release_alpha = 1.0f - expf(
-        -1.0f / (1.200f * DSP_SAMPLE_RATE_HZ));
 
     if (s_lock)
         xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -948,17 +686,13 @@ static void rebuild_character_filters(void)
 static void reset_character_states(void)
 {
     memset(&s_character_state, 0, sizeof(s_character_state));
-    s_character_state.drive = 0.0f;
     s_character_active_stage_mask = 0;
-    s_character_memory_feature_active = false;
 }
 
 static void set_character_factory(void)
 {
     memset(&s_character, 0, sizeof(s_character));
     s_character.mode = DSP_CHARACTER_CUSTOM;
-    s_character.memory_pct = 45.0f;
-    s_character.spectral_pct = 50.0f;
 }
 
 static bool character_config_valid(const dsp_character_t *c)
@@ -994,18 +728,10 @@ static void character_profile_defaults(dsp_character_mode_t mode,
         out->warmth_pct = 62.0f;
         out->detail_pct = 10.0f;
         out->drive_pct = 32.0f;
-        out->softness_pct = 55.0f;
-        out->air_pct = 22.0f;
-        out->memory_pct = 64.0f;
-        out->spectral_pct = 42.0f;
     } else {
         out->warmth_pct = 34.0f;
         out->detail_pct = 18.0f;
         out->drive_pct = 18.0f;
-        out->softness_pct = 28.0f;
-        out->air_pct = 38.0f;
-        out->memory_pct = 30.0f;
-        out->spectral_pct = 58.0f;
     }
 }
 
@@ -1027,6 +753,10 @@ static esp_err_t load_character_from_nvs(nvs_handle_t nvs)
             blob.version == DSP_CHARACTER_VERSION &&
             character_config_valid(&blob.character)) {
             s_character = blob.character;
+            s_character.softness_pct = 0.0f;
+            s_character.air_pct = 0.0f;
+            s_character.memory_pct = 0.0f;
+            s_character.spectral_pct = 0.0f;
             return ESP_OK;
         }
     } else if (len == sizeof(dsp_character_v3_legacy_blob_t)) {
@@ -1262,86 +992,6 @@ static esp_err_t load_preset_from_nvs(
 
 
 /* ============================================================
- * NVS - Exciter
- * ============================================================ */
-
-static void set_exciter_factory(void)
-{
-    s_exciter.enabled =
-        true;
-
-    s_exciter.h2_pct =
-        0.06f;
-
-    s_exciter.h3_pct =
-        0.02f;
-
-    s_exciter.crossover_hz =
-        60.0f;
-}
-
-
-static esp_err_t load_exciter_from_nvs(
-    nvs_handle_t nvs)
-{
-    dsp_exciter_blob_t blob;
-
-    size_t len =
-        sizeof(blob);
-
-
-    esp_err_t err =
-        nvs_get_blob(
-            nvs,
-            DSP_NVS_KEY_EXCITER,
-            &blob,
-            &len
-        );
-
-
-    if (err != ESP_OK ||
-        len != sizeof(blob) ||
-        blob.magic != DSP_EXCITER_MAGIC) {
-
-        set_exciter_factory();
-
-        return ESP_OK;
-    }
-
-
-    s_exciter =
-        blob.exciter;
-
-
-    s_exciter.h2_pct =
-        clampf_local(
-            s_exciter.h2_pct,
-            EXC_H2_MIN,
-            EXC_H2_MAX
-        );
-
-
-    s_exciter.h3_pct =
-        clampf_local(
-            s_exciter.h3_pct,
-            EXC_H3_MIN,
-            EXC_H3_MAX
-        );
-
-
-    s_exciter.crossover_hz =
-        clampf_local(
-            s_exciter.crossover_hz,
-            EXC_CROSSOVER_MIN,
-            EXC_CROSSOVER_MAX
-        );
-
-
-    return ESP_OK;
-}
-
-
-/* ============================================================
  * Init
  * ============================================================ */
 
@@ -1385,7 +1035,6 @@ esp_err_t dsp_engine_init(void)
     }
 
 
-    set_exciter_factory();
     set_character_factory();
 
 
@@ -1398,13 +1047,6 @@ esp_err_t dsp_engine_init(void)
         0,
         sizeof(s_state)
     );
-
-
-    /*
-     * Reset Exciter states.
-     */
-
-    reset_exciter_states();
 
 
     /*
@@ -1482,14 +1124,6 @@ esp_err_t dsp_engine_init(void)
         }
 
 
-        /*
-         * Exciter.
-         */
-
-        load_exciter_from_nvs(
-            nvs
-        );
-
         load_character_from_nvs(nvs);
 
 
@@ -1524,13 +1158,6 @@ esp_err_t dsp_engine_init(void)
         return err;
 
 
-    /*
-     * Build Exciter filters.
-     */
-
-    rebuild_exciter_filters();
-    reset_exciter_states();
-
     rebuild_character_filters();
     reset_character_states();
 
@@ -1545,32 +1172,10 @@ esp_err_t dsp_engine_init(void)
 
     ESP_LOGI(
         TAG,
-        "Exciter: enabled=%d H2=%.1f%% H3=%.1f%% XO=%.1fHz",
-        s_exciter.enabled,
-        s_exciter.h2_pct * 100.0f,
-        s_exciter.h3_pct * 100.0f,
-        s_exciter.crossover_hz
-    );
-
-
-    ESP_LOGI(
-        TAG,
-        "Character V4.1: enabled=%d mode=%d W=%.0f D=%.0f Drive=%.0f Soft=%.0f Air=%.0f Mem=%.0f Spectral=%.0f",
+        "Character V5 Lite: enabled=%d mode=%d W=%.0f D=%.0f Drive=%.0f stages=2",
         s_character.enabled, (int)s_character.mode,
         s_character.warmth_pct, s_character.detail_pct,
-        s_character.drive_pct, s_character.softness_pct,
-        s_character.air_pct, s_character.memory_pct,
-        s_character.spectral_pct
-    );
-
-
-    ESP_LOGI(
-        TAG,
-        "Exciter filters: dynamic HPF=%.1f..%.1fHz H2_LPF=%.1fHz H3_LPF=%.1fHz",
-        EXC_HARMONIC_HPF_HZ,
-        EXC_HARMONIC_HPF_MAX_HZ,
-        EXC_H2_LPF_HZ,
-        EXC_H3_LPF_HZ
+        s_character.drive_pct
     );
 
 
@@ -2191,340 +1796,6 @@ esp_err_t dsp_engine_reset_preset(
 
 
 /* ============================================================
- * Exciter setters
- * ============================================================ */
-
-esp_err_t dsp_engine_set_exciter(
-    bool enabled,
-    float h2_pct,
-    float h3_pct,
-    float crossover_hz)
-{
-    if (!s_lock)
-        return ESP_ERR_INVALID_STATE;
-
-
-    h2_pct =
-        clampf_local(
-            h2_pct,
-            EXC_H2_MIN,
-            EXC_H2_MAX
-        );
-
-
-    h3_pct =
-        clampf_local(
-            h3_pct,
-            EXC_H3_MIN,
-            EXC_H3_MAX
-        );
-
-
-    crossover_hz =
-        clampf_local(
-            crossover_hz,
-            EXC_CROSSOVER_MIN,
-            EXC_CROSSOVER_MAX
-        );
-
-
-    bool crossover_changed;
-
-
-    xSemaphoreTake(
-        s_lock,
-        portMAX_DELAY
-    );
-
-
-    crossover_changed =
-        fabsf(
-            s_exciter.crossover_hz -
-            crossover_hz
-        ) > 0.001f;
-
-
-    s_exciter.enabled =
-        enabled;
-
-    s_exciter.h2_pct =
-        h2_pct;
-
-    s_exciter.h3_pct =
-        h3_pct;
-
-    s_exciter.crossover_hz =
-        crossover_hz;
-
-
-    xSemaphoreGive(
-        s_lock
-    );
-
-
-    /*
-     * Crossover changes require rebuilding
-     * the bass LPF.
-     */
-    if (crossover_changed) {
-
-        rebuild_exciter_filters();
-
-        reset_exciter_states();
-    }
-
-
-    /*
-     * IMPORTANT:
-     *
-     * Realtime UI changes are NOT saved here.
-     *
-     * NVS is written only by
-     * dsp_engine_save_exciter().
-     */
-
-    return ESP_OK;
-}
-
-
-esp_err_t dsp_engine_get_exciter(
-    dsp_exciter_t *out)
-{
-    if (!out)
-        return ESP_ERR_INVALID_ARG;
-
-
-    if (!s_lock)
-        return ESP_ERR_INVALID_STATE;
-
-
-    xSemaphoreTake(
-        s_lock,
-        portMAX_DELAY
-    );
-
-    *out =
-        s_exciter;
-
-    xSemaphoreGive(
-        s_lock
-    );
-
-
-    return ESP_OK;
-}
-
-
-esp_err_t dsp_engine_set_exciter_enabled(
-    bool enabled)
-{
-    if (!s_lock)
-        return ESP_ERR_INVALID_STATE;
-
-
-    xSemaphoreTake(
-        s_lock,
-        portMAX_DELAY
-    );
-
-    s_exciter.enabled =
-        enabled;
-
-    xSemaphoreGive(
-        s_lock
-    );
-
-
-    return ESP_OK;
-}
-
-
-esp_err_t dsp_engine_set_exciter_h2(
-    float h2_pct)
-{
-    if (!s_lock)
-        return ESP_ERR_INVALID_STATE;
-
-
-    h2_pct =
-        clampf_local(
-            h2_pct,
-            EXC_H2_MIN,
-            EXC_H2_MAX
-        );
-
-
-    xSemaphoreTake(
-        s_lock,
-        portMAX_DELAY
-    );
-
-    s_exciter.h2_pct =
-        h2_pct;
-
-    xSemaphoreGive(
-        s_lock
-    );
-
-
-    return ESP_OK;
-}
-
-
-esp_err_t dsp_engine_set_exciter_h3(
-    float h3_pct)
-{
-    if (!s_lock)
-        return ESP_ERR_INVALID_STATE;
-
-
-    h3_pct =
-        clampf_local(
-            h3_pct,
-            EXC_H3_MIN,
-            EXC_H3_MAX
-        );
-
-
-    xSemaphoreTake(
-        s_lock,
-        portMAX_DELAY
-    );
-
-    s_exciter.h3_pct =
-        h3_pct;
-
-    xSemaphoreGive(
-        s_lock
-    );
-
-
-    return ESP_OK;
-}
-
-
-esp_err_t dsp_engine_set_exciter_crossover(
-    float crossover_hz)
-{
-    if (!s_lock)
-        return ESP_ERR_INVALID_STATE;
-
-
-    crossover_hz =
-        clampf_local(
-            crossover_hz,
-            EXC_CROSSOVER_MIN,
-            EXC_CROSSOVER_MAX
-        );
-
-
-    bool changed;
-
-
-    xSemaphoreTake(
-        s_lock,
-        portMAX_DELAY
-    );
-
-
-    changed =
-        fabsf(
-            s_exciter.crossover_hz -
-            crossover_hz
-        ) > 0.001f;
-
-
-    s_exciter.crossover_hz =
-        crossover_hz;
-
-
-    xSemaphoreGive(
-        s_lock
-    );
-
-
-    if (changed) {
-
-        rebuild_exciter_filters();
-
-        reset_exciter_states();
-    }
-
-
-    return ESP_OK;
-}
-
-
-/* ============================================================
- * Save Exciter
- * ============================================================ */
-
-esp_err_t dsp_engine_save_exciter(void)
-{
-    if (!s_lock)
-        return ESP_ERR_INVALID_STATE;
-
-
-    dsp_exciter_t exciter;
-
-
-    xSemaphoreTake(
-        s_lock,
-        portMAX_DELAY
-    );
-
-    exciter =
-        s_exciter;
-
-    xSemaphoreGive(
-        s_lock
-    );
-
-
-    dsp_exciter_blob_t blob;
-
-    blob.magic =
-        DSP_EXCITER_MAGIC;
-
-    blob.exciter =
-        exciter;
-
-
-    nvs_handle_t nvs;
-
-    esp_err_t err =
-        nvs_open(
-            DSP_NVS_NAMESPACE,
-            NVS_READWRITE,
-            &nvs
-        );
-
-
-    if (err != ESP_OK)
-        return err;
-
-
-    err =
-        nvs_set_blob(
-            nvs,
-            DSP_NVS_KEY_EXCITER,
-            &blob,
-            sizeof(blob)
-        );
-
-
-    if (err == ESP_OK)
-        err =
-            nvs_commit(nvs);
-
-
-    nvs_close(nvs);
-
-    return err;
-}
-
-
-/* ============================================================
  * Analog Character API / persistence
  * ============================================================ */
 
@@ -2535,8 +1806,15 @@ esp_err_t dsp_engine_set_character(const dsp_character_t *config)
     if (!character_config_valid(config))
         return ESP_ERR_INVALID_ARG;
 
+    dsp_character_t next = *config;
+    /* V5 ignores these legacy V4 controls; retain the NVS struct layout. */
+    next.softness_pct = 0.0f;
+    next.air_pct = 0.0f;
+    next.memory_pct = 0.0f;
+    next.spectral_pct = 0.0f;
+
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_character = *config;
+    s_character = next;
     xSemaphoreGive(s_lock);
 
     return ESP_OK;
@@ -2650,36 +1928,6 @@ esp_err_t dsp_engine_get_character_diagnostics(dsp_character_diagnostics_t *out)
 
 
 /* ============================================================
- * Exciter envelope coefficients
- * ============================================================ */
-
-static inline float exciter_attack_alpha(void)
-{
-    return 1.0f -
-           expf(
-               -1.0f /
-               (
-                   (EXC_ENV_ATTACK_MS * 0.001f)
-                   * DSP_SAMPLE_RATE_HZ
-               )
-           );
-}
-
-
-static inline float exciter_release_alpha(void)
-{
-    return 1.0f -
-           expf(
-               -1.0f /
-               (
-                   (EXC_ENV_RELEASE_MS * 0.001f)
-                   * DSP_SAMPLE_RATE_HZ
-               )
-           );
-}
-
-
-/* ============================================================
  * Audio processing
  * ============================================================ */
 
@@ -2706,15 +1954,12 @@ const uint8_t *dsp_engine_process(
 
     /* Local DSP configuration copied from the cached snapshot. */
     bool enabled;
-    bool exc_enabled;
     bool character_enabled;
     uint8_t num_stages;
     float master_linear;
 
     biquad_coef_t coefs[DSP_NUM_STAGES];
-    dsp_exciter_t exciter;
     dsp_character_t character;
-    exciter_filter_coef_t exc_filters;
     character_filter_coef_t character_filters;
 
     /*
@@ -2727,14 +1972,11 @@ const uint8_t *dsp_engine_process(
     static struct {
         bool valid;
         bool enabled;
-        bool exc_enabled;
         bool character_enabled;
         uint8_t num_stages;
         float master_linear;
         biquad_coef_t coefs[DSP_NUM_STAGES];
-        dsp_exciter_t exciter;
         dsp_character_t character;
-        exciter_filter_coef_t exc_filters;
         character_filter_coef_t character_filters;
     } cached;
 
@@ -2747,11 +1989,8 @@ const uint8_t *dsp_engine_process(
         cached.master_linear = s_active_master_linear;
         memcpy(cached.coefs, s_active_coefs, sizeof(cached.coefs));
 
-        cached.exciter = s_exciter;
-        cached.exc_enabled = cached.exciter.enabled;
         cached.character = s_character;
         cached.character_enabled = cached.character.enabled;
-        cached.exc_filters = s_exciter_filter;
         cached.character_filters = s_character_filters;
         cached.valid = true;
 
@@ -2765,11 +2004,8 @@ const uint8_t *dsp_engine_process(
     num_stages = cached.num_stages;
     master_linear = cached.master_linear;
     memcpy(coefs, cached.coefs, sizeof(coefs));
-    exciter = cached.exciter;
-    exc_enabled = cached.exc_enabled;
     character = cached.character;
     character_enabled = cached.character_enabled;
-    exc_filters = cached.exc_filters;
     character_filters = cached.character_filters;
 
 
@@ -2778,8 +2014,8 @@ const uint8_t *dsp_engine_process(
      */
 
     if (!enabled) {
-        /* Do not retain a nonlinear state across an arbitrary-length bypass. */
-        reset_character_states();
+        if (s_character_state.running)
+            reset_character_states();
         return pcm_in;
     }
 
@@ -2794,22 +2030,6 @@ const uint8_t *dsp_engine_process(
     const bool diag_warmth = (diag_feature_mask & DSP_CHARACTER_FEATURE_WARMTH) != 0;
     const bool diag_detail = (diag_feature_mask & DSP_CHARACTER_FEATURE_DETAIL) != 0;
     const bool diag_drive = (diag_feature_mask & DSP_CHARACTER_FEATURE_DRIVE) != 0;
-    const bool diag_softness = (diag_feature_mask & DSP_CHARACTER_FEATURE_SOFTNESS) != 0;
-    const bool diag_air = (diag_feature_mask & DSP_CHARACTER_FEATURE_AIR) != 0;
-    const bool diag_memory = (diag_feature_mask & DSP_CHARACTER_FEATURE_MEMORY) != 0;
-    const bool diag_spectral = (diag_feature_mask & DSP_CHARACTER_FEATURE_SPECTRAL) != 0;
-
-    /* Clear memory-only state once when its diagnostic path is bypassed. */
-    if (s_character_memory_feature_active && !diag_memory) {
-        for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
-            character_stage_state_t *ss = &s_character_state.stage[stage];
-            memset(ss->charge, 0, sizeof(ss->charge));
-            memset(ss->coupling, 0, sizeof(ss->coupling));
-            memset(ss->bias, 0, sizeof(ss->bias));
-        }
-        s_character_state.supply_envelope = 0.0f;
-    }
-    s_character_memory_feature_active = diag_memory;
 
     const size_t frames =
         len_bytes / 4;
@@ -2841,15 +2061,6 @@ const uint8_t *dsp_engine_process(
     int16_t *out =
         (int16_t *)s_scratch;
 
-
-    /*
-     * Envelope follower coefficients.
-     */
-    float env_attack =
-        exciter_attack_alpha();
-
-    float env_release =
-        exciter_release_alpha();
 
     const float character_control_smooth = 1.0f - expf(
         -1.0f / (0.012f * DSP_SAMPLE_RATE_HZ));
@@ -2919,479 +2130,152 @@ const uint8_t *dsp_engine_process(
 
         /*
          * ----------------------------------------------------
-         * Analog Character V4.1 — three-stage stateful preamp
+         * Analog Character V5 Lite — two-stage parallel model
          * ----------------------------------------------------
-         * The original signal remains the dry backbone. Each stage filters a
-         * frequency region, creates a small ADAA nonlinear residual, low-pass
-         * limits that residual, then returns it in parallel. No audio sample
-         * is fed back; memory lives in bounded envelope/coupling/supply states.
+         * Stage 1: 90–650 Hz, H2 only.
+         * Stage 2: 320 Hz–2.1 kHz, H2 + optional H3.
+         *
+         * Kept in the real-time path: two biquads for band shaping,
+         * one envelope follower, polynomial ADAA and one residual HPF
+         * per active channel. Memory/charge/coupling/supply branches
+         * and the separate bass exciter are intentionally removed.
          */
         {
             character_state_t *cs = &s_character_state;
             const float smooth = character_control_smooth;
 
-
-            const float tw = (character_enabled && diag_warmth)
+            const float target_warmth =
+                (character_enabled && diag_warmth)
                 ? character.warmth_pct * 0.01f : 0.0f;
-            const float td = (character_enabled && diag_detail)
+            const float target_detail =
+                (character_enabled && diag_detail)
                 ? character.detail_pct * 0.01f : 0.0f;
-            const float tr = (character_enabled && diag_drive)
+            const float target_drive =
+                (character_enabled && diag_drive)
                 ? character.drive_pct * 0.01f : 0.0f;
-            const float ts = (character_enabled && diag_softness)
-                ? character.softness_pct * 0.01f : 0.0f;
-            const float tm = (character_enabled && diag_memory)
-                ? character.memory_pct * 0.01f : 0.0f;
-            /* 50% is the neutral stage-balance point when Spectral is bypassed. */
-            const float tsp = (character_enabled && diag_spectral)
-                ? character.spectral_pct * 0.01f : 0.5f;
-            const float ta = (character_enabled && diag_air)
-                ? (db_to_linear(character.air_pct * 0.015f) - 1.0f) : 0.0f;
 
-            cs->warmth += smooth * (tw - cs->warmth);
-            cs->detail += smooth * (td - cs->detail);
-            cs->drive += smooth * (tr - cs->drive);
-            cs->softness += smooth * (ts - cs->softness);
-            cs->memory += smooth * (tm - cs->memory);
-            cs->spectral += smooth * (tsp - cs->spectral);
-            cs->air_gain += smooth * (ta - cs->air_gain);
+            cs->warmth += smooth * (target_warmth - cs->warmth);
+            cs->detail += smooth * (target_detail - cs->detail);
+            cs->drive += smooth * (target_drive - cs->drive);
 
-            const bool nonlinear_control_active =
-                (cs->warmth > 0.00002f) ||
-                (cs->detail > 0.00002f);
-            const bool air_control_active =
-                fabsf(cs->air_gain) > 0.000002f;
+            const float drive = diag_drive
+                ? (0.90f + 1.90f * cs->drive) : 1.0f;
+
+            const float stage_bias[CHARACTER_STAGE_COUNT] = {
+                0.020f + 0.105f * cs->warmth,
+                0.010f + 0.065f * cs->warmth + 0.018f * cs->detail
+            };
+            const float asymmetry[CHARACTER_STAGE_COUNT] = {
+                clampf_local(0.62f + 1.35f * stage_bias[0], 0.35f, 0.95f),
+                clampf_local(0.62f + 1.35f * stage_bias[1], 0.35f, 0.95f)
+            };
+            const float h2_gain[CHARACTER_STAGE_COUNT] = {
+                0.190f * cs->warmth * drive * asymmetry[0],
+                0.105f * cs->warmth * drive * asymmetry[1]
+            };
+            const float h3_gain[CHARACTER_STAGE_COUNT] = {
+                0.0f,
+                0.075f * cs->detail * drive *
+                    (0.075f + 0.11f * cs->detail)
+            };
+
+            uint8_t active_stage_mask = 0;
+            for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+                const uint32_t bit = 1U << stage;
+                if ((diag_stage_mask & bit) &&
+                    (h2_gain[stage] + h3_gain[stage]) > 0.0000001f) {
+                    active_stage_mask |= (uint8_t)bit;
+                }
+            }
+
+            const uint8_t stages_just_disabled =
+                s_character_active_stage_mask & (uint8_t)(~active_stage_mask);
+            for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+                if (stages_just_disabled & (1U << stage)) {
+                    memset(&cs->stage[stage], 0, sizeof(cs->stage[stage]));
+                }
+            }
+            s_character_active_stage_mask = active_stage_mask;
+
             const bool character_mix_active =
-                ((diag_stage_mask != 0) && nonlinear_control_active) ||
-                air_control_active;
+                (active_stage_mask != 0) || cs->running;
 
-            /* Do not run the nonlinear network if it cannot contribute audio. */
-            if (character_mix_active || cs->running) {
-                const bool memory_active = diag_memory && (cs->memory > 0.00001f);
-
-                float supply_level = 0.0f;
-                if (memory_active) {
-                    const float program_level = 0.5f * (fabsf(yl) + fabsf(yr));
-                    const float supply_alpha =
-                        (program_level > cs->supply_envelope)
-                        ? character_filters.supply_attack_alpha
-                        : character_filters.supply_release_alpha;
-                    cs->supply_envelope += supply_alpha *
-                        (program_level - cs->supply_envelope);
-                    supply_level = clampf_local(
-                        (cs->supply_envelope - 0.025f) / 0.20f, 0.0f, 1.0f);
-                }
-
-                const float effective_softness =
-                    diag_softness ? cs->softness : 0.0f;
-                const float supply_sag = memory_active
-                    ? 0.055f * cs->memory *
-                        (0.35f + 0.65f * effective_softness) * supply_level
-                    : 0.0f;
-                const float common_drive = diag_drive
-                    ? (0.90f + 1.90f * cs->drive) * (1.0f - supply_sag)
-                    : 1.0f;
-
-                const float spectral = diag_spectral ? cs->spectral : 0.5f;
-                const float spectral_weight[CHARACTER_STAGE_COUNT] = {
-                    1.15f - 0.30f * spectral,
-                    0.90f + 0.20f * spectral,
-                    0.55f + 0.90f * spectral
-                };
-
-                /* Keep the two nonlinear components independent:
-                 * Warmth controls only the even/H2 branch; Detail controls H3. */
-                const float stage_h2_mix[CHARACTER_STAGE_COUNT] = {
-                    0.190f * cs->warmth * spectral_weight[0],
-                    0.105f * cs->warmth * spectral_weight[1],
-                    0.020f * cs->warmth * spectral_weight[2]
-                };
-                const float stage_h3_mix[CHARACTER_STAGE_COUNT] = {
-                    0.0f,
-                    0.075f * cs->detail * spectral_weight[1],
-                    0.065f * cs->detail * spectral_weight[2]
-                };
-                const float base_bias[CHARACTER_STAGE_COUNT] = {
-                    0.020f + 0.105f * cs->warmth,
-                    0.010f + 0.065f * cs->warmth + 0.018f * cs->detail,
-                    0.004f + 0.022f * cs->warmth + 0.014f * cs->detail
-                };
-                const float stage_drive[CHARACTER_STAGE_COUNT] = {
-                    common_drive * 0.92f,
-                    common_drive,
-                    common_drive * 0.55f
-                };
-
-                uint8_t active_stage_mask = 0;
-                for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
-                    const uint32_t bit = 1U << stage;
-                    if ((diag_stage_mask & bit) &&
-                        (stage_h2_mix[stage] + stage_h3_mix[stage]) > 0.0000001f)
-                        active_stage_mask |= (uint8_t)bit;
-                }
-
-                /* Reset a stage only on the transition to bypass, not per sample. */
-                const uint8_t stages_just_disabled =
-                    s_character_active_stage_mask & (uint8_t)(~active_stage_mask);
-                for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
-                    if (stages_just_disabled & (1U << stage)) {
-                        memset(&cs->stage[stage], 0, sizeof(cs->stage[stage]));
-                    }
-                }
-                s_character_active_stage_mask = active_stage_mask;
-
-                const float character_dry[2] = { yl, yr };
-                float character_residual_sum[2] = { 0.0f, 0.0f };
+            if (character_mix_active) {
+                const float dry[2] = { yl, yr };
+                float residual_sum[2] = { 0.0f, 0.0f };
 
                 for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
-                    const uint32_t stage_bit = 1U << stage;
-                    if (!(active_stage_mask & stage_bit))
+                    if (!(active_stage_mask & (1U << stage)))
                         continue;
 
                     const uint32_t stage_start_cycles = esp_cpu_get_cycle_count();
                     character_stage_state_t *ss = &cs->stage[stage];
                     const character_stage_filter_t *fc =
                         &character_filters.stage[stage];
-                    float band[2];
 
                     for (unsigned ch = 0; ch < 2; ++ch) {
-                        band[ch] = biquad_process_sample(
-                            character_dry[ch], &fc->input_hpf, &ss->input_hpf[ch]);
-                        band[ch] = biquad_process_sample(
-                            band[ch], &fc->input_lpf, &ss->input_lpf[ch]);
+                        float band = biquad_process_sample(
+                            dry[ch], &fc->input_hpf, &ss->input_hpf[ch]);
+                        band = biquad_process_sample(
+                            band, &fc->input_lpf, &ss->input_lpf[ch]);
 
-                        const float abs_band = fabsf(band[ch]);
+                        const float abs_band = fabsf(band);
                         const float env_alpha = (abs_band > ss->envelope[ch])
                             ? fc->env_attack_alpha : fc->env_release_alpha;
                         ss->envelope[ch] += env_alpha *
                             (abs_band - ss->envelope[ch]);
 
-                        float charge_level = 0.0f;
-                        float bias = 0.0f;
-                        if (memory_active) {
-                            const float charge_alpha = (abs_band > ss->charge[ch])
-                                ? fc->charge_attack_alpha : fc->charge_release_alpha;
-                            ss->charge[ch] += charge_alpha *
-                                (abs_band - ss->charge[ch]);
-                            ss->coupling[ch] += fc->coupling_alpha *
-                                (band[ch] - ss->coupling[ch]);
-                            ss->coupling[ch] = clampf_local(
-                                ss->coupling[ch], -0.12f, 0.12f);
-
-                            const float level = clampf_local(
-                                (ss->envelope[ch] - 0.012f) / 0.16f, 0.0f, 1.0f);
-                            charge_level = clampf_local(
-                                (ss->charge[ch] - 0.008f) / 0.14f, 0.0f, 1.0f);
-                            const float bias_target = clampf_local(
-                                base_bias[stage] + cs->memory *
-                                    (0.030f * level + 0.050f * charge_level +
-                                     0.025f * ss->coupling[ch]),
-                                -0.16f, 0.18f);
-                            const float bias_alpha =
-                                (bias_target > ss->bias[ch])
-                                ? fc->bias_attack_alpha : fc->bias_release_alpha;
-                            ss->bias[ch] += bias_alpha *
-                                (bias_target - ss->bias[ch]);
-                            bias = ss->bias[ch];
-                        }
-
-                        const float drive_now = fmaxf(0.25f, stage_drive[stage]);
-                        const float peak_now = clampf_local(
+                        const float peak = clampf_local(
                             ss->envelope[ch] * 1.57079632679f, 0.0f, 0.95f);
-                        const float asymmetry = clampf_local(
-                            0.62f + 1.35f * bias, 0.35f, 0.95f);
-                        const float level_scale = diag_softness
-                            ? (1.0f - 0.18f * cs->softness * supply_level)
-                            : 1.0f;
-                        const float even_mix = stage_h2_mix[stage] * level_scale;
-                        const float odd_mix = stage_h3_mix[stage] * level_scale;
-                        const float even_gain = even_mix * drive_now * asymmetry;
-                        const float odd_shape = 0.075f +
-                            0.11f * cs->detail + 0.055f * charge_level;
-                        const float odd_gain = odd_mix * drive_now * odd_shape;
+                        const float even_gain = h2_gain[stage];
+                        const float odd_gain = h3_gain[stage];
 
                         float residual;
                         if (ss->adaa_valid[ch]) {
-                            const float even_avg =
-                                0.5f * (even_gain + ss->prev_even_gain[ch]);
-                            const float odd_avg =
-                                0.5f * (odd_gain + ss->prev_odd_gain[ch]);
                             residual = character_adaa_poly_residual(
-                                band[ch], ss->prev_x[ch],
-                                peak_now, ss->prev_peak[ch],
-                                even_avg, odd_avg);
+                                band, ss->prev_x[ch],
+                                peak, ss->prev_peak[ch],
+                                0.5f * (even_gain + ss->prev_even_gain[ch]),
+                                0.5f * (odd_gain + ss->prev_odd_gain[ch]));
                         } else {
-                            const float peak2 = peak_now * peak_now;
+                            const float peak2 = peak * peak;
                             residual = 0.0f;
                             if (even_gain != 0.0f) {
-                                const float h2 =
-                                    band[ch] * band[ch] - 0.5f * peak2;
-                                residual += even_gain * h2;
+                                residual += even_gain *
+                                    (band * band - 0.5f * peak2);
                             }
                             if (odd_gain != 0.0f) {
-                                const float h3 =
-                                    band[ch] * band[ch] * band[ch] -
-                                    0.75f * peak2 * band[ch];
-                                residual += odd_gain * h3;
+                                residual += odd_gain *
+                                    (band * band * band -
+                                     0.75f * peak2 * band);
                             }
                             ss->adaa_valid[ch] = true;
                         }
-                        ss->prev_x[ch] = band[ch];
+
+                        ss->prev_x[ch] = band;
                         ss->prev_even_gain[ch] = even_gain;
                         ss->prev_odd_gain[ch] = odd_gain;
-                        ss->prev_peak[ch] = peak_now;
+                        ss->prev_peak[ch] = peak;
 
                         residual = biquad_process_sample(
                             residual, &fc->residual_hpf, &ss->residual_hpf[ch]);
-                        if (stage == 2) {
-                            residual = biquad_process_sample(
-                                residual, &fc->residual_lpf, &ss->residual_lpf[ch]);
-                        }
-                        character_residual_sum[ch] += residual;
+                        residual_sum[ch] += residual;
                     }
 
                     character_stage_cycles[stage] +=
                         (uint32_t)(esp_cpu_get_cycle_count() - stage_start_cycles);
                 }
 
-                yl = character_dry[0] + character_residual_sum[0];
-                yr = character_dry[1] + character_residual_sum[1];
+                yl = dry[0] + residual_sum[0];
+                yr = dry[1] + residual_sum[1];
 
-                /* Air is a separate linear shelf and can be bypassed independently. */
-                if (diag_air && fabsf(cs->air_gain) > 0.000002f) {
-                    for (unsigned ch = 0; ch < 2; ++ch) {
-                        float *sample = (ch == 0) ? &yl : &yr;
-                        cs->air_lp[ch] += character_filters.air_alpha *
-                            (*sample - cs->air_lp[ch]);
-                        *sample += (*sample - cs->air_lp[ch]) * cs->air_gain;
-                    }
-                } else if (!diag_air) {
-                    cs->air_lp[0] = 0.0f;
-                    cs->air_lp[1] = 0.0f;
-                }
-
-                cs->running = character_mix_active;
+                cs->running = (active_stage_mask != 0);
                 if (!cs->running) {
                     memset(cs->stage, 0, sizeof(cs->stage));
-                    cs->supply_envelope = 0.0f;
-                    cs->air_lp[0] = 0.0f;
-                    cs->air_lp[1] = 0.0f;
                     s_character_active_stage_mask = 0;
                 }
             }
         }
-
-        /*
-         * ----------------------------------------------------
-         * Bass Harmonic Exciter
-         * ----------------------------------------------------
-         *
-         * PEQ/Shelf
-         *      ↓
-         * Mono bass
-         *      ↓
-         * Butterworth LPF
-         *      ↓
-         * Envelope activity / peak estimate
-         *      ↓
-         * Chebyshev T2 / T3
-         *      ↓
-         * Separate H2/H3 filtering
-         *      ↓
-         * Harmonic mix
-         *      ↓
-         * Dry L/R + harmonic
-         *
-         * Master is applied afterwards.
-         * ----------------------------------------------------
-         */
-
-        /* Exciter is a strictly optional additive branch. Its enable flag
-         * never gates the PEQ chain above or the master/limiter below. */
-        if (exc_enabled &&
-            (exciter.h2_pct > 0.0f ||
-             exciter.h3_pct > 0.0f)) {
-
-            /*
-             * -----------------------------------------------
-             * 1. Mono bass
-             * -----------------------------------------------
-             */
-            float bass =
-                0.5f *
-                (yl + yr);
-
-
-            /*
-             * -----------------------------------------------
-             * 2. Bass crossover LPF
-             * -----------------------------------------------
-             */
-            float low =
-                biquad_process_sample(
-                    bass,
-                    &exc_filters.bass_lpf,
-                    &s_exciter_state.bass_lpf
-                );
-
-
-            /*
-             * -----------------------------------------------
-             * 3. Gentle envelope activity control
-             * -----------------------------------------------
-             *
-             * Do NOT normalize low to +/-1 anymore.  Full
-             * normalization makes quiet bass passages produce an
-             * almost constant synthetic harmonic layer and can
-             * make the exciter sound like an added bass boost.
-             *
-             * The envelope is now only used as a soft activity
-             * gate.  Harmonics retain the real bass dynamics.
-             * -----------------------------------------------
-             */
-            float abs_low = fabsf(low);
-            float env = s_exciter_state.envelope;
-
-            if (abs_low > env) {
-                env += env_attack * (abs_low - env);
-            } else {
-                env += env_release * (abs_low - env);
-            }
-
-            s_exciter_state.envelope = env;
-
-            float activity =
-                clampf_local(
-                    (env - EXC_ENV_GATE) /
-                    EXC_ENV_SOFT_START,
-                    0.0f,
-                    1.0f
-                );
-
-            /*
-             * -----------------------------------------------
-             * 4. Chebyshev harmonic generation
-             * -----------------------------------------------
-             *
-             * Raw bass is intentionally used here.  This preserves
-             * level-dependent harmonic density instead of forcing
-             * every quiet note to full nonlinear drive.
-             *
-             * T2 = 2x² - A²
-             * T3 = 4x³ - 3A²x
-             * A is an amplitude estimate from the bass envelope.
-             *
-             * Residual DC / fundamental leakage is further reduced by
-             * the dedicated HPF stages immediately afterwards.
-             * -----------------------------------------------
-             */
-            float x = clampf_local(
-                low * EXC_NONLINEAR_DRIVE,
-                -1.0f,
-                1.0f
-            );
-
-            /*
-             * Estimate the driven sine peak from the smoothed mean-|x|
-             * envelope. This makes T2/T3 amplitude-aware instead of
-             * assuming every sample is a full-scale normalized sine.
-             */
-            float peak = clampf_local(
-                env * 1.57079632679f * EXC_NONLINEAR_DRIVE,
-                0.0f,
-                1.0f
-            );
-
-            /* T2 = 2*x^2 - A^2: cancels the DC term for a sine. */
-            float h2 = 2.0f * x * x - peak * peak;
-
-            /* T3 = 4*x^3 - 3*A^2*x: cancels its fundamental component. */
-            float h3 = 4.0f * x * x * x - 3.0f * peak * peak * x;
-
-            /*
-             * Activity gate only.  No envelope normalization.
-             */
-            h2 *= activity;
-            h3 *= activity;
-
-            /*
-             * -----------------------------------------------
-             * 6. H2 branch
-             *
-             * HPF 65 Hz
-             * LPF 160 Hz
-             * -----------------------------------------------
-             */
-            h2 =
-                biquad_process_sample(
-                    h2,
-                    &exc_filters.h2_hpf,
-                    &s_exciter_state.h2_hpf
-                );
-
-
-            h2 =
-                biquad_process_sample(
-                    h2,
-                    &exc_filters.h2_lpf,
-                    &s_exciter_state.h2_lpf
-                );
-
-
-            /*
-             * -----------------------------------------------
-             * 7. H3 branch
-             *
-             * HPF 65 Hz
-             * LPF 180 Hz
-             * -----------------------------------------------
-             */
-            h3 =
-                biquad_process_sample(
-                    h3,
-                    &exc_filters.h3_hpf,
-                    &s_exciter_state.h3_hpf
-                );
-
-
-            h3 =
-                biquad_process_sample(
-                    h3,
-                    &exc_filters.h3_lpf,
-                    &s_exciter_state.h3_lpf
-                );
-
-
-            /*
-             * -----------------------------------------------
-             * 8. Harmonic mix
-             * -----------------------------------------------
-             *
-             * 0.06 = 6%
-             * 0.02 = 2%
-             */
-            float harmonic =
-                exciter.h2_pct * h2 +
-                exciter.h3_pct * h3;
-
-
-            /*
-             * -----------------------------------------------
-             * 9. Add equally to L/R
-             * -----------------------------------------------
-             *
-             * Bass remains mono.
-             * Stereo image from the original signal is
-             * untouched.
-             */
-            yl +=
-                harmonic;
-
-            yr +=
-                harmonic;
-        }
-
-
-
 
         /*
          * ----------------------------------------------------
