@@ -126,13 +126,12 @@ esp_err_t dsp_engine_init(void);
  * len_bytes: input size in bytes
  * out_len  : output size in bytes
  *
- * Return:
- *   input pointer when bypassed
- *   internal scratch buffer when DSP is active
+ * The input frame is processed in place and returned unchanged as a pointer.
+ * The caller must provide a writable, aligned stereo PCM16 buffer.
  */
-const uint8_t *dsp_engine_process(const uint8_t *pcm_in,
-                                  size_t len_bytes,
-                                  size_t *out_len);
+uint8_t *dsp_engine_process(uint8_t *pcm_in,
+                            size_t len_bytes,
+                            size_t *out_len);
 
 /* ============================================================
  * DSP enable
