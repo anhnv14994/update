@@ -2312,8 +2312,8 @@ const uint8_t *dsp_engine_process(
                         const float dynamic_scale = 1.0f +
                             0.20f * cs->dynamic_saturation * level_norm;
 
-                        /* Stage 1 energy gently relaxes Stage 2 in the shared
-                         * 320–650 Hz region, limiting low-mid harmonic buildup. */
+                        /* Stage 1 low-mid energy gently modulates Stage 2 harmonic
+                         * density, helping control buildup without another stage. */
                         float interaction_scale = 1.0f;
                         if (stage == 1 && (active_stage_mask & DSP_CHARACTER_STAGE_1)) {
                             const float lower_ms = cs->stage[0].mean_square[ch];
