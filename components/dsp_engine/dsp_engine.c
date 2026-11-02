@@ -2241,12 +2241,11 @@ const uint8_t *dsp_engine_process(
                 0.190f * cs->warmth * drive * asymmetry[0],
                 0.105f * cs->warmth * drive * asymmetry[1]
             };
-            /* Less quadratic Detail curve: useful H3 at moderate settings,
-             * capped at ~3.6x the old maximum coefficient. */
+            /* Linear Detail control. At 100%, the H3 coefficient is
+             * ~3.6x the V5 Lite maximum; moderate settings become useful. */
             const float h3_gain[CHARACTER_STAGE_COUNT] = {
                 0.0f,
-                0.050f * cs->detail * drive *
-                    (0.70f + 0.30f * cs->detail)
+                0.140f * cs->detail * drive
             };
 
             uint8_t active_stage_mask = 0;
@@ -2301,8 +2300,11 @@ const uint8_t *dsp_engine_process(
                          * rise, taper nonlinear mix to keep dense passages open. */
                         const float level_norm =
                             clampf_local(mean_square * 32.0f, 0.0f, 1.0f);
+                        const float harmonic_intensity =
+                            clampf_local(0.65f * cs->warmth +
+                                         0.35f * cs->drive, 0.0f, 1.0f);
                         const float im_guard = 1.0f -
-                            0.10f * cs->drive * level_norm;
+                            0.22f * harmonic_intensity * level_norm;
 
                         /* Level-dependent saturation changes only harmonic
                          * coefficients; it does not compress the dry signal. */
