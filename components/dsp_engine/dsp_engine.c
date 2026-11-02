@@ -2584,6 +2584,61 @@ esp_err_t dsp_engine_save_character(void)
 
 
 /* ============================================================
+ * Character diagnostics (runtime only; never persisted)
+ * ============================================================ */
+
+esp_err_t dsp_engine_set_character_diagnostics(uint8_t stage_mask,
+                                               uint8_t feature_mask)
+{
+    if ((stage_mask & (uint8_t)~DSP_CHARACTER_STAGE_MASK_ALL) != 0 ||
+        (feature_mask & (uint8_t)~DSP_CHARACTER_FEATURE_MASK_ALL) != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    atomic_store_explicit(
+        &s_character_diag_stage_mask, stage_mask, memory_order_release);
+    atomic_store_explicit(
+        &s_character_diag_feature_mask, feature_mask, memory_order_release);
+
+    /* Start a fresh measurement window after every A/B change. */
+    atomic_store_explicit(&s_character_diag_blocks, 0, memory_order_relaxed);
+    for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+        atomic_store_explicit(
+            &s_character_diag_stage_total_us[stage], 0, memory_order_relaxed);
+        atomic_store_explicit(
+            &s_character_diag_stage_max_us[stage], 0, memory_order_relaxed);
+    }
+
+    return ESP_OK;
+}
+
+esp_err_t dsp_engine_get_character_diagnostics(dsp_character_diagnostics_t *out)
+{
+    if (!out)
+        return ESP_ERR_INVALID_ARG;
+
+    memset(out, 0, sizeof(*out));
+    out->stage_mask = (uint8_t)atomic_load_explicit(
+        &s_character_diag_stage_mask, memory_order_acquire);
+    out->feature_mask = (uint8_t)atomic_load_explicit(
+        &s_character_diag_feature_mask, memory_order_acquire);
+    out->blocks = atomic_exchange_explicit(
+        &s_character_diag_blocks, 0, memory_order_acq_rel);
+    out->cpu_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+
+    for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+        const uint32_t total_us = atomic_exchange_explicit(
+            &s_character_diag_stage_total_us[stage], 0, memory_order_acq_rel);
+        out->stage_avg_us[stage] = out->blocks ? total_us / out->blocks : 0;
+        out->stage_max_us[stage] = atomic_exchange_explicit(
+            &s_character_diag_stage_max_us[stage], 0, memory_order_acq_rel);
+    }
+
+    return ESP_OK;
+}
+
+
+/* ============================================================
  * Exciter envelope coefficients
  * ============================================================ */
 
