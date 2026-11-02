@@ -57,12 +57,13 @@ typedef struct {
 
 #define DSP_CHARACTER_STAGE_1          (1U << 0)
 #define DSP_CHARACTER_STAGE_2          (1U << 1)
-#define DSP_CHARACTER_STAGE_3          (1U << 2)
+#define DSP_CHARACTER_STAGE_3          (1U << 2) /* Reserved; bypassed in V5 Lite. */
 #define DSP_CHARACTER_STAGE_MASK_ALL   (DSP_CHARACTER_STAGE_1 | DSP_CHARACTER_STAGE_2)
 
 #define DSP_CHARACTER_FEATURE_WARMTH   (1U << 0)
 #define DSP_CHARACTER_FEATURE_DETAIL   (1U << 1)
 #define DSP_CHARACTER_FEATURE_DRIVE    (1U << 2)
+/* V4-only feature bits retained for source/NVS compatibility; ignored in V5. */
 #define DSP_CHARACTER_FEATURE_SOFTNESS (1U << 3)
 #define DSP_CHARACTER_FEATURE_AIR      (1U << 4)
 #define DSP_CHARACTER_FEATURE_MEMORY   (1U << 5)
@@ -101,10 +102,10 @@ typedef struct {
     float warmth_pct;   /* 0..100: normalized H2/body amount */
     float detail_pct;   /* 0..100: normalized H3/detail amount */
     float drive_pct;    /* 0..100: overall harmonic mix multiplier */
-    float softness_pct; /* 0..100: backs off harmonics on loud peaks */
-    float air_pct;      /* 0..100: high-frequency shelf, up to +1.5 dB */
-    float memory_pct;   /* 0..100: bias/coupling/shared-supply memory depth */
-    float spectral_pct;/* 0..100: low-to-upper-stage saturation balance */
+    float softness_pct; /* Reserved V4 field; ignored by V5 Lite. */
+    float air_pct;      /* Reserved V4 field; ignored by V5 Lite. */
+    float memory_pct;   /* Reserved V4 field; ignored by V5 Lite. */
+    float spectral_pct; /* Reserved V4 field; ignored by V5 Lite. */
 } dsp_character_t;
 
 /* ============================================================
