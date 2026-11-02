@@ -2610,6 +2610,19 @@ const uint8_t *dsp_engine_process(
     }
 
 
+    /* Local DSP configuration copied from the cached snapshot. */
+    bool enabled;
+    bool exc_enabled;
+    bool character_enabled;
+    uint8_t num_stages;
+    float master_linear;
+
+    biquad_coef_t coefs[DSP_NUM_STAGES];
+    dsp_exciter_t exciter;
+    dsp_character_t character;
+    exciter_filter_coef_t exc_filters;
+    character_filter_coef_t character_filters;
+
     /*
      * Non-blocking configuration snapshot.
      *
