@@ -3469,6 +3469,25 @@ const uint8_t *dsp_engine_process(
         }
     }
 
+    for (unsigned block = 0; block < 3; ++block) {
+        atomic_fetch_add_explicit(
+            &s_dsp_diag_block_cycles[block],
+            dsp_block_cycles[block],
+            memory_order_relaxed);
+
+        uint32_t prev_max = atomic_load_explicit(
+            &s_dsp_diag_block_max_cycles[block],
+            memory_order_relaxed);
+        while (dsp_block_cycles[block] > prev_max &&
+               !atomic_compare_exchange_weak_explicit(
+                   &s_dsp_diag_block_max_cycles[block],
+                   &prev_max,
+                   dsp_block_cycles[block],
+                   memory_order_relaxed,
+                   memory_order_relaxed)) {
+        }
+    }
+
     const uint32_t now_ms =
         (uint32_t)(esp_timer_get_time() / 1000ULL);
     if (s_character_diag_last_log_ms == 0)
