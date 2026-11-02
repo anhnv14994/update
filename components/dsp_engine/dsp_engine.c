@@ -194,6 +194,14 @@ typedef struct {
     bool running;
 } character_state_t;
 
+typedef struct {
+    float h2_gain[CHARACTER_STAGE_COUNT];
+    float h3_gain[CHARACTER_STAGE_COUNT];
+    float im_guard_amount;
+    float dynamic_scale;
+    float interaction_scale;
+} character_gain_coeffs_t;
+
 
 static character_filter_coef_t s_character_filters;
 static character_state_t s_character_state;
@@ -344,6 +352,40 @@ static inline float clampf_local(float x, float lo, float hi)
         return hi;
 
     return x;
+}
+
+/* Derive all control-dependent Character coefficients once per PCM block. */
+static inline void character_calculate_gain_coeffs(
+    float warmth,
+    float detail,
+    float drive_control,
+    float interaction,
+    float dynamic_saturation,
+    bool drive_enabled,
+    character_gain_coeffs_t *out)
+{
+    const float drive = drive_enabled
+        ? (0.90f + 1.90f * drive_control) : 1.0f;
+
+    const float stage_bias_0 = 0.020f + 0.105f * warmth;
+    const float stage_bias_1 = 0.010f + 0.065f * warmth + 0.018f * detail;
+    const float asymmetry_0 = clampf_local(
+        0.62f + 1.35f * stage_bias_0, 0.35f, 0.95f);
+    const float asymmetry_1 = clampf_local(
+        0.62f + 1.35f * stage_bias_1, 0.35f, 0.95f);
+
+    out->h2_gain[0] = 0.190f * warmth * drive * asymmetry_0;
+    out->h2_gain[1] = 0.105f * warmth * drive * asymmetry_1;
+    out->h3_gain[0] = 0.0f;
+    out->h3_gain[1] = 0.050f * detail * drive;
+
+    const float diagnostic_drive = drive_enabled ? drive_control : 0.0f;
+    const float harmonic_intensity = clampf_local(
+        0.65f * warmth + 0.35f * diagnostic_drive, 0.0f, 1.0f);
+
+    out->im_guard_amount = 0.22f * harmonic_intensity;
+    out->dynamic_scale = 0.20f * dynamic_saturation;
+    out->interaction_scale = 0.25f * interaction;
 }
 
 
@@ -638,6 +680,17 @@ static void calc_butterworth_hpf_q(
  *   AA2 = (x^2 + x*p + p^2) / 3
  *   AA3 = (x^3 + x^2*p + x*p^2 + p^3) / 4
  */
+static inline float character_adaa_even_residual(
+    float x, float x2, float x_prev, float x2_prev,
+    float mean_square, float mean_square_prev,
+    float even_gain)
+{
+    const float xp = x * x_prev;
+    const float ms = 0.5f * (mean_square + mean_square_prev);
+    const float aa2 = (x2 + xp + x2_prev) * 0.333333333333f;
+    return even_gain * (aa2 - ms);
+}
+
 static inline float character_adaa_poly_residual(
     float x, float x2, float x_prev, float x2_prev,
     float mean_square, float mean_square_prev,
@@ -2116,15 +2169,151 @@ const uint8_t *dsp_engine_process(
         (int16_t *)s_scratch;
 
 
-    /* 12 ms control smoothing precomputed at 44.1 kHz; avoid expf per block. */
+    /*
+     * V6 Phase 1: preserve the 12 ms exponential control time constant at
+     * the block boundary, then linearly ramp the derived coefficients across
+     * this PCM block. The detector, ADAA and nonlinear transfer are unchanged.
+     */
     const float character_control_smooth = 0.00188786049f;
+    const float block_decay = powf(
+        1.0f - character_control_smooth, (float)frames);
+    const float block_alpha = 1.0f - block_decay;
+    const float inv_frames = 1.0f / (float)frames;
 
-    /* Per-call profiling: cycle-counter reads are much lighter than timers. */
+    character_state_t *cs = &s_character_state;
+
+    const float target_warmth =
+        (character_enabled && diag_warmth)
+        ? character.warmth_pct * 0.01f : 0.0f;
+    const float target_detail =
+        (character_enabled && diag_detail)
+        ? character.detail_pct * 0.01f : 0.0f;
+    const float target_drive =
+        (character_enabled && diag_drive)
+        ? character.drive_pct * 0.01f : 0.0f;
+    const float target_interaction =
+        (character_enabled && character.harmonic_interaction_enabled)
+        ? character.harmonic_interaction_pct * 0.01f : 0.0f;
+    const float target_dynamic =
+        (character_enabled && character.dynamic_saturation_enabled)
+        ? character.dynamic_saturation_pct * 0.01f : 0.0f;
+
+    const float warmth_start = cs->warmth;
+    const float detail_start = cs->detail;
+    const float drive_start = cs->drive;
+    const float interaction_start = cs->interaction;
+    const float dynamic_start = cs->dynamic_saturation;
+
+    const float warmth_end =
+        warmth_start + block_alpha * (target_warmth - warmth_start);
+    const float detail_end =
+        detail_start + block_alpha * (target_detail - detail_start);
+    const float drive_end =
+        drive_start + block_alpha * (target_drive - drive_start);
+    const float interaction_end =
+        interaction_start + block_alpha * (target_interaction - interaction_start);
+    const float dynamic_end =
+        dynamic_start + block_alpha * (target_dynamic - dynamic_start);
+
+    cs->warmth = warmth_end;
+    cs->detail = detail_end;
+    cs->drive = drive_end;
+    cs->interaction = interaction_end;
+    cs->dynamic_saturation = dynamic_end;
+
+    character_gain_coeffs_t gain_start;
+    character_gain_coeffs_t gain_end;
+    character_calculate_gain_coeffs(
+        warmth_start, detail_start, drive_start,
+        interaction_start, dynamic_start, diag_drive, &gain_start);
+    character_calculate_gain_coeffs(
+        warmth_end, detail_end, drive_end,
+        interaction_end, dynamic_end, diag_drive, &gain_end);
+
+    float current_h2_gain[CHARACTER_STAGE_COUNT] = {
+        gain_start.h2_gain[0], gain_start.h2_gain[1]
+    };
+    float current_h3_gain[CHARACTER_STAGE_COUNT] = {
+        gain_start.h3_gain[0], gain_start.h3_gain[1]
+    };
+    const float h2_gain_step[CHARACTER_STAGE_COUNT] = {
+        (gain_end.h2_gain[0] - gain_start.h2_gain[0]) * inv_frames,
+        (gain_end.h2_gain[1] - gain_start.h2_gain[1]) * inv_frames
+    };
+    const float h3_gain_step[CHARACTER_STAGE_COUNT] = {
+        (gain_end.h3_gain[0] - gain_start.h3_gain[0]) * inv_frames,
+        (gain_end.h3_gain[1] - gain_start.h3_gain[1]) * inv_frames
+    };
+
+    float current_im_guard = gain_start.im_guard_amount;
+    const float im_guard_step =
+        (gain_end.im_guard_amount - gain_start.im_guard_amount) * inv_frames;
+    float current_dynamic_scale = gain_start.dynamic_scale;
+    const float dynamic_scale_step =
+        (gain_end.dynamic_scale - gain_start.dynamic_scale) * inv_frames;
+    float current_interaction_scale = gain_start.interaction_scale;
+    const float interaction_scale_step =
+        (gain_end.interaction_scale - gain_start.interaction_scale) * inv_frames;
+
+    const float max_dynamic_scale = fmaxf(
+        gain_start.dynamic_scale, gain_end.dynamic_scale);
+    const float max_interaction_scale = fmaxf(
+        gain_start.interaction_scale, gain_end.interaction_scale);
+    const bool dynamic_active = max_dynamic_scale > 0.0000002f;
+
+    uint8_t active_stage_mask = 0;
+    for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+        const float max_gain = fmaxf(
+            gain_start.h2_gain[stage] + gain_start.h3_gain[stage],
+            gain_end.h2_gain[stage] + gain_end.h3_gain[stage]);
+        if ((diag_stage_mask & (1U << stage)) &&
+            max_gain > 0.0000001f) {
+            active_stage_mask |= (uint8_t)(1U << stage);
+        }
+    }
+
+    const bool interaction_for_stage2 =
+        (active_stage_mask & DSP_CHARACTER_STAGE_1) != 0 &&
+        max_interaction_scale > 0.00000025f;
+    const bool h2_only_block =
+        !dynamic_active &&
+        !interaction_for_stage2 &&
+        gain_start.h3_gain[1] == 0.0f &&
+        gain_end.h3_gain[1] == 0.0f;
+
+    const uint8_t stages_just_disabled =
+        s_character_active_stage_mask & (uint8_t)(~active_stage_mask);
+
+    /* Prevent stale bypassed-stage residuals entering the shared HPF. */
+    if (active_stage_mask != s_character_active_stage_mask) {
+        memset(s_character_residual_hpf, 0,
+               sizeof(s_character_residual_hpf));
+    }
+
+    for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+        if (stages_just_disabled & (1U << stage)) {
+            memset(&cs->stage[stage], 0, sizeof(cs->stage[stage]));
+        }
+    }
+    s_character_active_stage_mask = active_stage_mask;
+
+#if CONFIG_DSP_CHARACTER_PROFILE
+    /* Opt-in only: cycle-counter reads stay out of normal playback builds. */
     uint32_t character_stage_cycles[CHARACTER_STAGE_COUNT] = {0};
+#endif
 
     for (size_t i = 0;
          i < frames;
          i++) {
+        for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+            current_h2_gain[stage] += h2_gain_step[stage];
+            current_h3_gain[stage] += h3_gain_step[stage];
+        }
+        current_im_guard += im_guard_step;
+        if (dynamic_active)
+            current_dynamic_scale += dynamic_scale_step;
+        if (interaction_for_stage2)
+            current_interaction_scale += interaction_scale_step;
 
         float l =
             (float)in[i * 2] /
@@ -2195,79 +2384,6 @@ const uint8_t *dsp_engine_process(
          */
         {
             character_state_t *cs = &s_character_state;
-            const float smooth = character_control_smooth;
-
-            const float target_warmth =
-                (character_enabled && diag_warmth)
-                ? character.warmth_pct * 0.01f : 0.0f;
-            const float target_detail =
-                (character_enabled && diag_detail)
-                ? character.detail_pct * 0.01f : 0.0f;
-            const float target_drive =
-                (character_enabled && diag_drive)
-                ? character.drive_pct * 0.01f : 0.0f;
-            const float target_interaction =
-                (character_enabled && character.harmonic_interaction_enabled)
-                ? character.harmonic_interaction_pct * 0.01f : 0.0f;
-            const float target_dynamic =
-                (character_enabled && character.dynamic_saturation_enabled)
-                ? character.dynamic_saturation_pct * 0.01f : 0.0f;
-
-            cs->warmth += smooth * (target_warmth - cs->warmth);
-            cs->detail += smooth * (target_detail - cs->detail);
-            cs->drive += smooth * (target_drive - cs->drive);
-            cs->interaction += smooth * (target_interaction - cs->interaction);
-            cs->dynamic_saturation += smooth *
-                (target_dynamic - cs->dynamic_saturation);
-
-            const float drive = diag_drive
-                ? (0.90f + 1.90f * cs->drive) : 1.0f;
-
-            const float stage_bias[CHARACTER_STAGE_COUNT] = {
-                0.020f + 0.105f * cs->warmth,
-                0.010f + 0.065f * cs->warmth + 0.018f * cs->detail
-            };
-            const float asymmetry[CHARACTER_STAGE_COUNT] = {
-                clampf_local(0.62f + 1.35f * stage_bias[0], 0.35f, 0.95f),
-                clampf_local(0.62f + 1.35f * stage_bias[1], 0.35f, 0.95f)
-            };
-            const float h2_gain[CHARACTER_STAGE_COUNT] = {
-                0.190f * cs->warmth * drive * asymmetry[0],
-                0.105f * cs->warmth * drive * asymmetry[1]
-            };
-            /* Linear Detail control. At 100%, the H3 coefficient is
-             * ~3.6x the V5 Lite maximum; moderate settings become useful. */
-            const float h3_gain[CHARACTER_STAGE_COUNT] = {
-                0.0f,
-                0.050f * cs->detail * drive
-            };
-
-            uint8_t active_stage_mask = 0;
-            for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
-                const uint32_t bit = 1U << stage;
-                if ((diag_stage_mask & bit) &&
-                    (h2_gain[stage] + h3_gain[stage]) > 0.0000001f) {
-                    active_stage_mask |= (uint8_t)bit;
-                }
-            }
-
-            const uint8_t stages_just_disabled =
-                s_character_active_stage_mask & (uint8_t)(~active_stage_mask);
-
-            /* Prevent a bypassed Stage's old residual from leaking through
-             * the new shared filter after a diagnostic A/B mask change. */
-            if (active_stage_mask != s_character_active_stage_mask) {
-                memset(s_character_residual_hpf, 0,
-                       sizeof(s_character_residual_hpf));
-            }
-
-            for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
-                if (stages_just_disabled & (1U << stage)) {
-                    memset(&cs->stage[stage], 0, sizeof(cs->stage[stage]));
-                }
-            }
-            s_character_active_stage_mask = active_stage_mask;
-
             const bool character_mix_active =
                 (active_stage_mask != 0) || cs->running;
 
@@ -2279,22 +2395,15 @@ const uint8_t *dsp_engine_process(
                     if (!(active_stage_mask & (1U << stage)))
                         continue;
 
+#if CONFIG_DSP_CHARACTER_PROFILE
                     const uint32_t stage_start_cycles = esp_cpu_get_cycle_count();
+#endif
                     character_stage_state_t *ss = &cs->stage[stage];
                     const character_stage_filter_t *fc =
                         &character_filters.stage[stage];
 
                     const bool interaction_for_stage =
-                        (stage == 1) && (cs->interaction > 0.000001f) &&
-                        ((active_stage_mask & DSP_CHARACTER_STAGE_1) != 0);
-                    const bool dynamic_active =
-                        cs->dynamic_saturation > 0.000001f;
-                    const float diagnostic_drive =
-                        diag_drive ? cs->drive : 0.0f;
-                    const float harmonic_intensity = clampf_local(
-                        0.65f * cs->warmth + 0.35f * diagnostic_drive,
-                        0.0f, 1.0f);
-                    const float im_guard_amount = 0.22f * harmonic_intensity;
+                        (stage == 1) && interaction_for_stage2;
 
                     for (unsigned ch = 0; ch < 2; ++ch) {
                         float band = biquad_process_sample(
@@ -2309,20 +2418,21 @@ const uint8_t *dsp_engine_process(
                          * samples, so it cannot become negative in normal operation. */
                         const float mean_square = ss->mean_square[ch];
 
-                        float even_gain = h2_gain[stage];
-                        float odd_gain = h3_gain[stage];
+                        float even_gain = current_h2_gain[stage];
+                        float odd_gain = current_h3_gain[stage];
 
                         const float level_raw = mean_square * 32.0f;
                         const float level_norm = (level_raw < 1.0f)
                             ? level_raw : 1.0f;
                         const float im_guard = 1.0f -
-                            im_guard_amount * level_norm;
+                            current_im_guard * level_norm;
 
-                        /* Skip optional modifier arithmetic entirely while OFF. */
+                        /* IM guard remains active in every path; optional
+                         * modifiers and their clamp are skipped when OFF. */
                         float harmonic_scale = im_guard;
                         if (dynamic_active) {
-                            harmonic_scale *= 1.0f +
-                                0.20f * cs->dynamic_saturation * level_norm;
+                            harmonic_scale *=
+                                1.0f + current_dynamic_scale * level_norm;
                         }
                         if (interaction_for_stage) {
                             const float lower_ms = cs->stage[0].mean_square[ch];
@@ -2330,21 +2440,34 @@ const uint8_t *dsp_engine_process(
                             const float lower_norm = (lower_raw < 1.0f)
                                 ? lower_raw : 1.0f;
                             harmonic_scale *=
-                                1.0f - 0.25f * cs->interaction * lower_norm;
+                                1.0f - current_interaction_scale * lower_norm;
                         }
-                        harmonic_scale = clampf_local(
-                            harmonic_scale, 0.65f, 1.25f);
+                        if (dynamic_active || interaction_for_stage) {
+                            harmonic_scale = clampf_local(
+                                harmonic_scale, 0.65f, 1.25f);
+                        }
                         even_gain *= harmonic_scale;
                         odd_gain *= harmonic_scale;
 
                         float residual;
                         if (ss->adaa_valid[ch]) {
-                            residual = character_adaa_poly_residual(
-                                band, band_power, ss->prev_x[ch],
-                                ss->prev_band_power[ch],
-                                mean_square, ss->prev_mean_square[ch],
-                                0.5f * (even_gain + ss->prev_even_gain[ch]),
-                                0.5f * (odd_gain + ss->prev_odd_gain[ch]));
+                            const float aa_even_gain =
+                                0.5f * (even_gain + ss->prev_even_gain[ch]);
+                            const float aa_odd_gain =
+                                0.5f * (odd_gain + ss->prev_odd_gain[ch]);
+                            if (h2_only_block && aa_odd_gain == 0.0f) {
+                                residual = character_adaa_even_residual(
+                                    band, band_power, ss->prev_x[ch],
+                                    ss->prev_band_power[ch],
+                                    mean_square, ss->prev_mean_square[ch],
+                                    aa_even_gain);
+                            } else {
+                                residual = character_adaa_poly_residual(
+                                    band, band_power, ss->prev_x[ch],
+                                    ss->prev_band_power[ch],
+                                    mean_square, ss->prev_mean_square[ch],
+                                    aa_even_gain, aa_odd_gain);
+                            }
                         } else {
                             residual = 0.0f;
                             if (even_gain != 0.0f) {
@@ -2367,18 +2490,23 @@ const uint8_t *dsp_engine_process(
                         residual_sum[ch] += residual;
                     }
 
+#if CONFIG_DSP_CHARACTER_PROFILE
                     character_stage_cycles[stage] +=
                         (uint32_t)(esp_cpu_get_cycle_count() - stage_start_cycles);
+#endif
                 }
 
                 /* Both stages use identical 15 Hz HPFs. By linearity,
                  * H(r1) + H(r2) == H(r1 + r2), so filter the sum once. */
+#if CONFIG_DSP_CHARACTER_PROFILE
                 const uint32_t residual_filter_start = esp_cpu_get_cycle_count();
+#endif
                 for (unsigned ch = 0; ch < 2; ++ch) {
                     residual_sum[ch] = biquad_process_sample(
                         residual_sum[ch], &character_filters.residual_hpf,
                         &s_character_residual_hpf[ch]);
                 }
+#if CONFIG_DSP_CHARACTER_PROFILE
                 const uint32_t residual_filter_cycles =
                     (uint32_t)(esp_cpu_get_cycle_count() - residual_filter_start);
                 if (active_stage_mask & DSP_CHARACTER_STAGE_1) {
@@ -2386,6 +2514,7 @@ const uint8_t *dsp_engine_process(
                 } else if (active_stage_mask & DSP_CHARACTER_STAGE_2) {
                     character_stage_cycles[1] += residual_filter_cycles;
                 }
+#endif
 
                 yl = dry[0] + residual_sum[0];
                 yr = dry[1] + residual_sum[1];
@@ -2453,6 +2582,7 @@ const uint8_t *dsp_engine_process(
     }
 
 
+#if CONFIG_DSP_CHARACTER_PROFILE
     if (character_enabled) {
         const uint32_t cpu_mhz =
             (CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ > 0)
@@ -2480,6 +2610,7 @@ const uint8_t *dsp_engine_process(
         atomic_fetch_add_explicit(
             &s_character_diag_blocks, 1U, memory_order_relaxed);
     }
+#endif
 
     return s_scratch;
 }
