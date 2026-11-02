@@ -569,7 +569,7 @@ static esp_err_t api_character_diag_handler(httpd_req_t *req)
         stage->valueint < 0 || stage->valueint > (int)DSP_CHARACTER_STAGE_MASK_ALL ||
         feature->valueint < 0 || feature->valueint > (int)DSP_CHARACTER_FEATURE_MASK_ALL) {
         cJSON_Delete(body);
-        return send_error_json(req, 400, "stage_mask 0..7 and feature_mask 0..127 required");
+        return send_error_json(req, 400, "stage_mask 0..3 and feature_mask 0..7 required");
     }
 
     esp_err_t err = dsp_engine_set_character_diagnostics(
@@ -1050,7 +1050,7 @@ static esp_err_t api_master_handler(
 //
 // Save cả:
 //   1. PEQ preset
-//   2. Harmonic Exciter
+//   2. Analog Character V5 Lite
 //
 // Vì vậy nút Save trên /dsp sẽ lưu toàn bộ cấu hình.
 // ---------------------------------------------------------------------------
