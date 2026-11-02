@@ -52,40 +52,13 @@ typedef struct {
 } dsp_preset_t;
 
 /* ============================================================
- * Bass Harmonic Exciter
- * ============================================================ */
-
-#define EXC_H2_MIN              0.00f
-#define EXC_H2_MAX              0.12f
-
-#define EXC_H3_MIN              0.00f
-#define EXC_H3_MAX              0.06f
-
-#define EXC_CROSSOVER_MIN       30.0f
-#define EXC_CROSSOVER_MAX       100.0f
-
-typedef struct {
-    bool  enabled;
-
-    /* Internal representation:
-     * 0.06 = 6%
-     * 0.02 = 2%
-     */
-    float h2_pct;
-
-    float h3_pct;
-
-    float crossover_hz;
-} dsp_exciter_t;
-
-/* ============================================================
  * Analog Character diagnostic bypass masks (session-only)
  * ============================================================ */
 
 #define DSP_CHARACTER_STAGE_1          (1U << 0)
 #define DSP_CHARACTER_STAGE_2          (1U << 1)
 #define DSP_CHARACTER_STAGE_3          (1U << 2)
-#define DSP_CHARACTER_STAGE_MASK_ALL   (DSP_CHARACTER_STAGE_1 | DSP_CHARACTER_STAGE_2 | DSP_CHARACTER_STAGE_3)
+#define DSP_CHARACTER_STAGE_MASK_ALL   (DSP_CHARACTER_STAGE_1 | DSP_CHARACTER_STAGE_2)
 
 #define DSP_CHARACTER_FEATURE_WARMTH   (1U << 0)
 #define DSP_CHARACTER_FEATURE_DETAIL   (1U << 1)
@@ -94,13 +67,13 @@ typedef struct {
 #define DSP_CHARACTER_FEATURE_AIR      (1U << 4)
 #define DSP_CHARACTER_FEATURE_MEMORY   (1U << 5)
 #define DSP_CHARACTER_FEATURE_SPECTRAL (1U << 6)
-#define DSP_CHARACTER_FEATURE_MASK_ALL ((1U << 7) - 1U)
+#define DSP_CHARACTER_FEATURE_MASK_ALL (DSP_CHARACTER_FEATURE_WARMTH | DSP_CHARACTER_FEATURE_DETAIL | DSP_CHARACTER_FEATURE_DRIVE)
 
 typedef struct {
     uint8_t stage_mask;
     uint8_t feature_mask;
     uint32_t blocks;
-    uint32_t stage_avg_us[3];
+    uint32_t stage_avg_us[3]; /* Stage 3 slot is reserved and remains zero in V5. */
     uint32_t stage_max_us[3];
     uint32_t cpu_mhz;
 } dsp_character_diagnostics_t;
@@ -111,8 +84,8 @@ esp_err_t dsp_engine_set_character_diagnostics(uint8_t stage_mask,
 esp_err_t dsp_engine_get_character_diagnostics(dsp_character_diagnostics_t *out);
 
 /* ============================================================
- * Analog Character Engine V4.1
- * Three-stage asymmetric polynomial waveshaper + exact first-order ADAA + state memory.
+ * Analog Character Engine V5 Lite
+ * Two-stage lightweight polynomial waveshaper + first-order ADAA.
  * Public structure/API remains V2-compatible; no NVS layout change.
  * ============================================================ */
 
@@ -202,24 +175,6 @@ const char *dsp_engine_preset_name(dsp_preset_id_t id);
 
 esp_err_t dsp_engine_save_preset(dsp_preset_id_t id);
 esp_err_t dsp_engine_reset_preset(dsp_preset_id_t id);
-
-/* ============================================================
- * Bass Harmonic Exciter
- * ============================================================ */
-
-esp_err_t dsp_engine_set_exciter(bool enabled,
-                                 float h2_pct,
-                                 float h3_pct,
-                                 float crossover_hz);
-
-esp_err_t dsp_engine_get_exciter(dsp_exciter_t *out);
-
-esp_err_t dsp_engine_set_exciter_enabled(bool enabled);
-esp_err_t dsp_engine_set_exciter_h2(float h2_pct);
-esp_err_t dsp_engine_set_exciter_h3(float h3_pct);
-esp_err_t dsp_engine_set_exciter_crossover(float crossover_hz);
-
-esp_err_t dsp_engine_save_exciter(void);
 
 /* Analog Character */
 esp_err_t dsp_engine_set_character(const dsp_character_t *config);
