@@ -336,13 +336,24 @@ void app_main(void)
         }
     }
 
-    // Start web server for configuration
+    // Start web server for configuration and register all feature routes.
     web_server = web_server_start();
 
-    // Register the DSP Sound UI + JSON API (/dsp, /api/dsp/*) on the same
-    // server, without touching web_server.c itself.
-    dsp_api_register(web_server);
-    web_log_register(web_server);
+    if (!web_server) {
+        ESP_LOGE(TAG, "Web server unavailable; /log and /dsp routes not registered");
+    } else {
+        // Register log endpoints first so they keep their slots if the URI
+        // handler limit is ever reduced accidentally.
+        esp_err_t log_err = web_log_register(web_server);
+        if (log_err != ESP_OK) {
+            ESP_LOGE(TAG, "Web log registration failed: %s", esp_err_to_name(log_err));
+        }
+
+        esp_err_t dsp_err = dsp_api_register(web_server);
+        if (dsp_err != ESP_OK) {
+            ESP_LOGE(TAG, "DSP API registration failed: %s", esp_err_to_name(dsp_err));
+        }
+    }
     // Wait for WiFi connection (give it some time)
     ESP_LOGI(TAG, "Waiting for network...");
     vTaskDelay(pdMS_TO_TICKS(2000));
