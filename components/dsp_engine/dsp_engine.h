@@ -85,9 +85,9 @@ esp_err_t dsp_engine_set_character_diagnostics(uint8_t stage_mask,
 esp_err_t dsp_engine_get_character_diagnostics(dsp_character_diagnostics_t *out);
 
 /* ============================================================
- * Analog Character Engine V5 Lite
- * Two-stage lightweight polynomial waveshaper + first-order ADAA.
- * Public structure/API remains V2-compatible; no NVS layout change.
+ * Analog Character Engine V5.1 Lite
+ * Two-stage polynomial waveshaper + mean-square tracking and optional controls.
+ * V5.1 adds versioned NVS migration for the appended controls.
  * ============================================================ */
 
 typedef enum {
@@ -106,6 +106,12 @@ typedef struct {
     float air_pct;      /* Reserved V4 field; ignored by V5 Lite. */
     float memory_pct;   /* Reserved V4 field; ignored by V5 Lite. */
     float spectral_pct; /* Reserved V4 field; ignored by V5 Lite. */
+
+    /* V5.1 Lite controls; defaults are OFF to preserve V5 Lite voicing. */
+    bool harmonic_interaction_enabled;
+    float harmonic_interaction_pct; /* 0..100: Stage 1 -> Stage 2 coupling */
+    bool dynamic_saturation_enabled;
+    float dynamic_saturation_pct;   /* 0..100: level-dependent harmonic drive */
 } dsp_character_t;
 
 /* ============================================================
