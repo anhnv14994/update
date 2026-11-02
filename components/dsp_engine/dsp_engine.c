@@ -2981,12 +2981,23 @@ const uint8_t *dsp_engine_process(
                     : 1.0f;
 
                 const float spectral = diag_spectral ? cs->spectral : 0.5f;
-                const float stage_mix[CHARACTER_STAGE_COUNT] = {
-                    0.190f * cs->warmth * (1.15f - 0.30f * spectral),
-                    (0.105f * cs->warmth + 0.075f * cs->detail) *
-                        (0.90f + 0.20f * spectral),
-                    (0.020f * cs->warmth + 0.065f * cs->detail) *
-                        (0.55f + 0.90f * spectral)
+                const float spectral_weight[CHARACTER_STAGE_COUNT] = {
+                    1.15f - 0.30f * spectral,
+                    0.90f + 0.20f * spectral,
+                    0.55f + 0.90f * spectral
+                };
+
+                /* Keep the two nonlinear components independent:
+                 * Warmth controls only the even/H2 branch; Detail controls H3. */
+                const float stage_h2_mix[CHARACTER_STAGE_COUNT] = {
+                    0.190f * cs->warmth * spectral_weight[0],
+                    0.105f * cs->warmth * spectral_weight[1],
+                    0.020f * cs->warmth * spectral_weight[2]
+                };
+                const float stage_h3_mix[CHARACTER_STAGE_COUNT] = {
+                    0.0f,
+                    0.075f * cs->detail * spectral_weight[1],
+                    0.065f * cs->detail * spectral_weight[2]
                 };
                 const float base_bias[CHARACTER_STAGE_COUNT] = {
                     0.020f + 0.105f * cs->warmth,
@@ -3002,7 +3013,8 @@ const uint8_t *dsp_engine_process(
                 uint8_t active_stage_mask = 0;
                 for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
                     const uint32_t bit = 1U << stage;
-                    if ((diag_stage_mask & bit) && stage_mix[stage] > 0.0000001f)
+                    if ((diag_stage_mask & bit) &&
+                        (stage_h2_mix[stage] + stage_h3_mix[stage]) > 0.0000001f)
                         active_stage_mask |= (uint8_t)bit;
                 }
 
@@ -3079,12 +3091,12 @@ const uint8_t *dsp_engine_process(
                         const float level_scale = diag_softness
                             ? (1.0f - 0.18f * cs->softness * supply_level)
                             : 1.0f;
-                        const float mix = stage_mix[stage] * level_scale;
-                        const float even_gain = mix * drive_now * asymmetry;
-                        const float odd_shape = diag_detail
-                            ? (0.075f + 0.11f * cs->detail + 0.055f * charge_level)
-                            : 0.0f;
-                        const float odd_gain = mix * drive_now * odd_shape;
+                        const float even_mix = stage_h2_mix[stage] * level_scale;
+                        const float odd_mix = stage_h3_mix[stage] * level_scale;
+                        const float even_gain = even_mix * drive_now * asymmetry;
+                        const float odd_shape = 0.075f +
+                            0.11f * cs->detail + 0.055f * charge_level;
+                        const float odd_gain = odd_mix * drive_now * odd_shape;
 
                         float residual;
                         if (ss->adaa_valid[ch]) {
