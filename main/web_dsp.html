@@ -360,6 +360,39 @@ input[type=range]::-moz-range-thumb{
   margin-top:4px;
 }
 
+
+/* CHARACTER DIAGNOSTICS */
+.character-diag{
+  margin-top:14px;
+  padding:12px;
+  border:1px solid var(--line);
+  border-radius:9px;
+  background:#101318;
+}
+.character-diag-title{
+  color:var(--accent);
+  font-size:11px;
+  font-weight:700;
+  letter-spacing:1.2px;
+  text-transform:uppercase;
+  margin:10px 0 4px;
+}
+.character-diag .feature{
+  padding:9px 0;
+}
+.character-diag .feature:first-of-type{
+  margin-top:4px;
+}
+.diag-stats{
+  margin-top:10px;
+  padding:9px;
+  border-radius:7px;
+  background:var(--panel2);
+  color:var(--text);
+  font:10px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;
+  overflow-wrap:anywhere;
+}
+
 /* SWITCH */
 
 .switch{
@@ -719,6 +752,58 @@ input[type=range]::-moz-range-thumb{
       <strong>B — British Natural:</strong> nhẹ hơn, giữ độ thoáng và articulation.<br>
       Chọn A/B để nạp thiết lập gợi ý; sau đó kéo slider để tinh chỉnh. Thay đổi áp dụng realtime,
       nhấn <strong>Save preset</strong> để lưu vào NVS.
+    </div>
+
+    <div class="character-diag">
+      <div class="character-diag-title">A/B Diagnostics · Session only</div>
+      <div class="peq-subtitle">Các công tắc này chỉ dùng thử nghiệm realtime, không ghi vào NVS. Tắt một mục sẽ bypass nhánh tính toán tương ứng.</div>
+
+      <div class="character-diag-title">Nonlinear stages</div>
+      <div class="feature">
+        <div class="feature-text"><div class="feature-name">Stage 1 · Low-mid body</div><div class="feature-info">90–650 Hz</div></div>
+        <label class="switch"><input type="checkbox" id="charStage1" checked><span class="slider-toggle"></span></label>
+      </div>
+      <div class="feature">
+        <div class="feature-text"><div class="feature-name">Stage 2 · Vocal core</div><div class="feature-info">320 Hz–2.1 kHz</div></div>
+        <label class="switch"><input type="checkbox" id="charStage2" checked><span class="slider-toggle"></span></label>
+      </div>
+      <div class="feature">
+        <div class="feature-text"><div class="feature-name">Stage 3 · Presence texture</div><div class="feature-info">1.7–4.6 kHz</div></div>
+        <label class="switch"><input type="checkbox" id="charStage3" checked><span class="slider-toggle"></span></label>
+      </div>
+
+      <div class="character-diag-title">Parameter bypass</div>
+      <div class="feature">
+        <div class="feature-text"><div class="feature-name">Warmth</div><div class="feature-info">H2 / vocal body</div></div>
+        <label class="switch"><input type="checkbox" id="charFeatWarmth" checked><span class="slider-toggle"></span></label>
+      </div>
+      <div class="feature">
+        <div class="feature-text"><div class="feature-name">Detail</div><div class="feature-info">H3 / texture</div></div>
+        <label class="switch"><input type="checkbox" id="charFeatDetail" checked><span class="slider-toggle"></span></label>
+      </div>
+      <div class="feature">
+        <div class="feature-text"><div class="feature-name">Drive</div><div class="feature-info">Harmonic drive multiplier · OFF = unity</div></div>
+        <label class="switch"><input type="checkbox" id="charFeatDrive" checked><span class="slider-toggle"></span></label>
+      </div>
+      <div class="feature">
+        <div class="feature-text"><div class="feature-name">Softness</div><div class="feature-info">Peak-dependent harmonic softening</div></div>
+        <label class="switch"><input type="checkbox" id="charFeatSoftness" checked><span class="slider-toggle"></span></label>
+      </div>
+      <div class="feature">
+        <div class="feature-text"><div class="feature-name">Air</div><div class="feature-info">High-frequency shelf</div></div>
+        <label class="switch"><input type="checkbox" id="charFeatAir" checked><span class="slider-toggle"></span></label>
+      </div>
+      <div class="feature">
+        <div class="feature-text"><div class="feature-name">Memory</div><div class="feature-info">Bias / charge / coupling / supply states</div></div>
+        <label class="switch"><input type="checkbox" id="charFeatMemory" checked><span class="slider-toggle"></span></label>
+      </div>
+      <div class="feature">
+        <div class="feature-text"><div class="feature-name">Spectral</div><div class="feature-info">Stage balance · OFF = neutral 50%</div></div>
+        <label class="switch"><input type="checkbox" id="charFeatSpectral" checked><span class="slider-toggle"></span></label>
+      </div>
+
+      <div class="character-diag-title">Measured DSP time · microseconds</div>
+      <div class="diag-stats" id="characterDiagStats">Waiting for audio blocks…</div>
     </div>
 
   </div>
@@ -1913,6 +1998,75 @@ characterControls.forEach(([inputId, key, valueId]) => {
     updateCharacter();
   });
 });
+
+
+/* =========================================================
+   ANALOG CHARACTER DIAGNOSTICS
+   ========================================================= */
+
+const characterStageSwitches = [
+  ["charStage1", 1],
+  ["charStage2", 2],
+  ["charStage3", 4]
+];
+
+const characterFeatureSwitches = [
+  ["charFeatWarmth", 1],
+  ["charFeatDetail", 2],
+  ["charFeatDrive", 4],
+  ["charFeatSoftness", 8],
+  ["charFeatAir", 16],
+  ["charFeatMemory", 32],
+  ["charFeatSpectral", 64]
+];
+
+function renderCharacterDiagnostics(d){
+  if(!d) return;
+  characterStageSwitches.forEach(([id, bit]) => {
+    document.getElementById(id).checked = (d.stage_mask & bit) !== 0;
+  });
+  characterFeatureSwitches.forEach(([id, bit]) => {
+    document.getElementById(id).checked = (d.feature_mask & bit) !== 0;
+  });
+
+  const avg = d.stage_avg_us || [0,0,0];
+  const max = d.stage_max_us || [0,0,0];
+  document.getElementById("characterDiagStats").textContent =
+    `blocks=${d.blocks} | MHz=${d.cpu_mhz} | S1 ${avg[0]}/${max[0]} us | S2 ${avg[1]}/${max[1]} us | S3 ${avg[2]}/${max[2]} us`;
+}
+
+async function refreshCharacterDiagnostics(){
+  try{
+    const d = await api("/api/dsp/character_diag");
+    renderCharacterDiagnostics(d);
+  }catch(err){
+    console.error(err);
+    document.getElementById("characterDiagStats").textContent = "Diagnostic API unavailable";
+  }
+}
+
+async function updateCharacterDiagnostics(){
+  const stage_mask = characterStageSwitches.reduce((m, [id, bit]) =>
+    m | (document.getElementById(id).checked ? bit : 0), 0);
+  const feature_mask = characterFeatureSwitches.reduce((m, [id, bit]) =>
+    m | (document.getElementById(id).checked ? bit : 0), 0);
+  try{
+    const d = await api("/api/dsp/character_diag", {stage_mask, feature_mask});
+    renderCharacterDiagnostics(d);
+    setStatus("Character diagnostic updated");
+  }catch(err){
+    console.error(err);
+    setStatus("Không thể cập nhật diagnostic switches");
+    await refreshCharacterDiagnostics();
+  }
+}
+
+[...characterStageSwitches, ...characterFeatureSwitches].forEach(([id]) => {
+  document.getElementById(id).addEventListener("change", updateCharacterDiagnostics);
+});
+
+refreshCharacterDiagnostics();
+setInterval(refreshCharacterDiagnostics, 2500);
 
 
 /* =========================================================
