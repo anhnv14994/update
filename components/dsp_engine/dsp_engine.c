@@ -862,19 +862,30 @@ static inline float character_adaa_poly_residual(
     const float p2 = p * p;
     const float xp = x * p;
 
-    const float aa2 = (x2 + xp + p2) * 0.333333333333f;
+    /* Evaluate only enabled polynomial branches. This makes the Warmth and
+     * Detail A/B switches reduce actual arithmetic, not just output gain. */
+    if (even_gain == 0.0f && odd_gain == 0.0f)
+        return 0.0f;
 
-    const float aa3 = (x2 * x + x2 * p + x * p2 + p2 * p) * 0.25f;
-    const float mid = (x + p) * 0.5f;
-
-    /* Remove the steady-sine DC/fundamental components. The residual HPF
-     * also rejects DC and slow envelope error for complex programme material. */
     const float peak_avg = (peak + peak_prev) * 0.5f;
     const float peak2 = peak_avg * peak_avg;
-    const float h2 = aa2 - 0.5f * peak2;
-    const float h3 = aa3 - 0.75f * peak2 * mid;
+    float residual = 0.0f;
 
-    return even_gain * h2 + odd_gain * h3;
+    if (even_gain != 0.0f) {
+        const float aa2 = (x2 + xp + p2) * 0.333333333333f;
+        const float h2 = aa2 - 0.5f * peak2;
+        residual += even_gain * h2;
+    }
+
+    if (odd_gain != 0.0f) {
+        const float aa3 =
+            (x2 * x + x2 * p + x * p2 + p2 * p) * 0.25f;
+        const float mid = (x + p) * 0.5f;
+        const float h3 = aa3 - 0.75f * peak2 * mid;
+        residual += odd_gain * h3;
+    }
+
+    return residual;
 }
 
 static void rebuild_character_filters(void)
@@ -3110,10 +3121,18 @@ const uint8_t *dsp_engine_process(
                                 even_avg, odd_avg);
                         } else {
                             const float peak2 = peak_now * peak_now;
-                            const float h2 = band[ch] * band[ch] - 0.5f * peak2;
-                            const float h3 = band[ch] * band[ch] * band[ch] -
-                                0.75f * peak2 * band[ch];
-                            residual = even_gain * h2 + odd_gain * h3;
+                            residual = 0.0f;
+                            if (even_gain != 0.0f) {
+                                const float h2 =
+                                    band[ch] * band[ch] - 0.5f * peak2;
+                                residual += even_gain * h2;
+                            }
+                            if (odd_gain != 0.0f) {
+                                const float h3 =
+                                    band[ch] * band[ch] * band[ch] -
+                                    0.75f * peak2 * band[ch];
+                                residual += odd_gain * h3;
+                            }
                             ss->adaa_valid[ch] = true;
                         }
                         ss->prev_x[ch] = band[ch];
