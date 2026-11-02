@@ -564,133 +564,14 @@ input[type=range]::-moz-range-thumb{
   </div>
 
 
-  <!-- BASS HARMONIC EXCITER -->
-
-  <div class="section">
-
-    <div class="peq-title">
-      Bass Harmonic Exciter
-    </div>
-
-    <div class="peq-subtitle">
-      Tạo nhẹ harmonic từ bass sâu để tăng cảm giác rền, độ sâu và body
-      mà không cần tăng mạnh bass cơ bản.
-    </div>
-
-
-    <!-- ENABLE -->
-
-    <div class="feature" style="border-top:none; margin-top:0;">
-
-      <div class="feature-text">
-
-        <div
-          class="feature-name tooltip"
-          data-tip="Bass Exciter tạo H2/H3 từ thành phần bass thấp. H2 thiên về body và cảm giác sâu/rền; H3 thêm texture.">
-          Bass Exciter
-        </div>
-
-        <div class="feature-info">
-          H2 = Depth / Body · H3 = Texture
-        </div>
-
-      </div>
-
-      <label class="switch">
-
-        <input
-          type="checkbox"
-          id="exciterEnabled">
-
-        <span class="slider-toggle"></span>
-
-      </label>
-
-    </div>
-
-
-    <!-- H2 -->
-
-    <div class="band">
-
-      <div class="row-label">
-        <span>H2 — Depth / Body</span>
-        <b id="exciterH2Val">6.0%</b>
-      </div>
-
-      <input
-        class="exciter-range"
-        type="range"
-        id="exciterH2"
-        min="0"
-        max="12"
-        step="0.1"
-        value="6">
-
-    </div>
-
-
-    <!-- H3 -->
-
-    <div class="band">
-
-      <div class="row-label">
-        <span>H3 — Texture</span>
-        <b id="exciterH3Val">2.0%</b>
-      </div>
-
-      <input
-        class="exciter-range"
-        type="range"
-        id="exciterH3"
-        min="0"
-        max="6"
-        step="0.1"
-        value="2">
-
-    </div>
-
-
-    <!-- CROSSOVER -->
-
-    <div class="band">
-
-      <div class="row-label">
-        <span>Crossover</span>
-        <b id="exciterXoverVal">60 Hz</b>
-      </div>
-
-      <input
-        class="exciter-range"
-        type="range"
-        id="exciterXover"
-        min="30"
-        max="100"
-        step="1"
-        value="60">
-
-    </div>
-
-
-    <div class="exciter-note">
-      <strong>Gợi ý:</strong>
-      H2 là núm chính để tăng độ sâu/rền của bass.
-      H3 chỉ nên tăng nhẹ để thêm texture.
-      Mức bắt đầu tốt: <strong>H2 5–7%</strong>, <strong>H3 1–2%</strong>.
-      Nếu bass bị ù hoặc tiếng hơi gằn, giảm H3 trước; sau đó mới giảm H2.
-    </div>
-
-  </div>
-
-
   <!-- ANALOG CHARACTER -->
 
   <div class="section">
 
-    <div class="peq-title">Analog Character</div>
+    <div class="peq-title">Analog Character <span style="font-size:12px;opacity:.65;">V5 Lite</span></div>
 
     <div class="peq-subtitle">
-      Preamp DSP 3 tầng với saturation phụ thuộc tần số và memory feedback có kiểm soát. A thiên về body/mượt; B giữ độ tự nhiên và thoáng. Độc lập với Bass Harmonic Exciter.
+      Preamp DSP V5 Lite gồm 2 tầng nonlinear song song: Stage 1 tạo body bằng H2; Stage 2 bổ sung vocal core bằng H2/H3. Đã lược bỏ memory phức tạp và Bass Exciter để ưu tiên realtime trên ESP32-S3.
     </div>
 
     <div class="presets" id="characterProfiles">
@@ -707,7 +588,7 @@ input[type=range]::-moz-range-thumb{
     <div class="feature">
       <div class="feature-text">
         <div class="feature-name">Analog Character</div>
-        <div class="feature-info">Bật/tắt tầng tạo màu âm, không ảnh hưởng PEQ và Exciter</div>
+        <div class="feature-info">Bật/tắt hai tầng tạo màu âm; PEQ và limiter vẫn hoạt động độc lập.</div>
       </div>
       <label class="switch">
         <input type="checkbox" id="characterEnabled">
@@ -730,25 +611,9 @@ input[type=range]::-moz-range-thumb{
       <input class="exciter-range" type="range" id="characterDrive" min="0" max="100" step="1" value="0">
     </div>
 
-    <div class="band">
-      <div class="row-label"><span>Softness — Dynamic Softening</span><b id="characterSoftnessVal">0%</b></div>
-      <input class="exciter-range" type="range" id="characterSoftness" min="0" max="100" step="1" value="0">
-    </div>
 
-    <div class="band">
-      <div class="row-label"><span>Air — High Frequency Openness</span><b id="characterAirVal">0%</b></div>
-      <input class="exciter-range" type="range" id="characterAir" min="0" max="100" step="1" value="0">
-    </div>
 
-    <div class="band">
-      <div class="row-label"><span>Memory — Bias / Charge / Supply</span><b id="characterMemoryVal">50%</b></div>
-      <input class="exciter-range" type="range" id="characterMemory" min="0" max="100" step="1" value="50">
-    </div>
 
-    <div class="band">
-      <div class="row-label"><span>Spectral — Stage Balance</span><b id="characterSpectralVal">50%</b></div>
-      <input class="exciter-range" type="range" id="characterSpectral" min="0" max="100" step="1" value="50">
-    </div>
 
     <div class="exciter-note">
       <strong>A — Tube Warm:</strong> tăng body và độ dày vocal, H2 trội hơn.<br>
@@ -758,8 +623,8 @@ input[type=range]::-moz-range-thumb{
     </div>
 
     <div class="character-diag">
-      <div class="character-diag-title">A/B Diagnostics · Session only</div>
-      <div class="peq-subtitle">Các công tắc này chỉ dùng thử nghiệm realtime, không ghi vào NVS. Tắt một mục sẽ bypass nhánh tính toán tương ứng.</div>
+      <div class="character-diag-title">A/B Diagnostics · V5 Lite · Session only</div>
+      <div class="peq-subtitle">Các công tắc chỉ dùng thử nghiệm realtime, không ghi vào NVS. V5 chỉ có 2 Stage và 3 nhánh điều khiển nhẹ.</div>
 
       <div class="character-diag-title">Nonlinear stages</div>
       <div class="feature">
@@ -769,10 +634,6 @@ input[type=range]::-moz-range-thumb{
       <div class="feature">
         <div class="feature-text"><div class="feature-name">Stage 2 · Vocal core</div><div class="feature-info">320 Hz–2.1 kHz</div></div>
         <label class="switch"><input type="checkbox" id="charStage2" checked><span class="slider-toggle"></span></label>
-      </div>
-      <div class="feature">
-        <div class="feature-text"><div class="feature-name">Stage 3 · Presence texture</div><div class="feature-info">1.7–4.6 kHz</div></div>
-        <label class="switch"><input type="checkbox" id="charStage3" checked><span class="slider-toggle"></span></label>
       </div>
 
       <div class="character-diag-title">Parameter bypass</div>
@@ -788,21 +649,14 @@ input[type=range]::-moz-range-thumb{
         <div class="feature-text"><div class="feature-name">Drive</div><div class="feature-info">Harmonic drive multiplier · OFF = unity</div></div>
         <label class="switch"><input type="checkbox" id="charFeatDrive" checked><span class="slider-toggle"></span></label>
       </div>
-      <div class="feature">
-        <div class="feature-text"><div class="feature-name">Softness</div><div class="feature-info">Peak-dependent harmonic softening</div></div>
-        <label class="switch"><input type="checkbox" id="charFeatSoftness" checked><span class="slider-toggle"></span></label>
+
       </div>
-      <div class="feature">
-        <div class="feature-text"><div class="feature-name">Air</div><div class="feature-info">High-frequency shelf</div></div>
-        <label class="switch"><input type="checkbox" id="charFeatAir" checked><span class="slider-toggle"></span></label>
-      </div>
-      <div class="feature">
-        <div class="feature-text"><div class="feature-name">Memory</div><div class="feature-info">Bias / charge / coupling / supply states</div></div>
-        <label class="switch"><input type="checkbox" id="charFeatMemory" checked><span class="slider-toggle"></span></label>
-      </div>
-      <div class="feature">
-        <div class="feature-text"><div class="feature-name">Spectral</div><div class="feature-info">Stage balance · OFF = neutral 50%</div></div>
-        <label class="switch"><input type="checkbox" id="charFeatSpectral" checked><span class="slider-toggle"></span></label>
+
+      <div class="character-diag-title">Stage processing time · µs per 352-sample frame</div>
+      <div class="exciter-note">
+        Stage 1: <strong id="charStage1Stats">0 / 0 µs</strong><br>
+        Stage 2: <strong id="charStage2Stats">0 / 0 µs</strong><br>
+        <span id="charDiagBlocks">0 measured frames</span>
       </div>
 
     </div>
@@ -1562,233 +1416,6 @@ document
 
 
 /* =========================================================
-   BASS HARMONIC EXCITER
-   ========================================================= */
-
-function renderExciter(){
-
-  const e =
-    state && state.exciter;
-
-  if(!e)
-    return;
-
-
-  const enabled =
-    !!e.enabled;
-
-  const h2 =
-    Number(e.h2_pct);
-
-  const h3 =
-    Number(e.h3_pct);
-
-  const xover =
-    Number(e.crossover_hz);
-
-
-  document
-    .getElementById("exciterEnabled")
-    .checked =
-      enabled;
-
-
-  document
-    .getElementById("exciterH2")
-    .value =
-      h2;
-
-
-  document
-    .getElementById("exciterH3")
-    .value =
-      h3;
-
-
-  document
-    .getElementById("exciterXover")
-    .value =
-      xover;
-
-
-  document
-    .getElementById("exciterH2Val")
-    .textContent =
-      `${h2.toFixed(1)}%`;
-
-
-  document
-    .getElementById("exciterH3Val")
-    .textContent =
-      `${h3.toFixed(1)}%`;
-
-
-  document
-    .getElementById("exciterXoverVal")
-    .textContent =
-      `${Math.round(xover)} Hz`;
-}
-
-
-/*
- * Debounce:
- * slider vẫn chạy mượt trên trình duyệt,
- * nhưng ESP32 không bị nhận hàng chục POST/giây.
- */
-
-let exciterTimer = null;
-
-
-function scheduleExciterUpdate(){
-
-  clearTimeout(exciterTimer);
-
-  exciterTimer =
-    setTimeout(
-      updateExciter,
-      120
-    );
-}
-
-
-async function updateExciter(){
-
-  const enabled =
-    document
-      .getElementById("exciterEnabled")
-      .checked;
-
-  const h2 =
-    parseFloat(
-      document
-        .getElementById("exciterH2")
-        .value
-    );
-
-  const h3 =
-    parseFloat(
-      document
-        .getElementById("exciterH3")
-        .value
-    );
-
-  const xover =
-    parseFloat(
-      document
-        .getElementById("exciterXover")
-        .value
-    );
-
-
-  try{
-
-    state =
-      await api(
-        "/api/dsp/exciter",
-        {
-          enabled:enabled,
-          h2_pct:h2,
-          h3_pct:h3,
-          crossover_hz:xover
-        }
-      );
-
-    renderExciter();
-
-  }catch(err){
-
-    console.error(err);
-
-    setStatus(
-      "Không thể cập nhật Bass Exciter"
-    );
-
-  }
-}
-
-
-/* ENABLE */
-
-document.getElementById("exciterEnabled").addEventListener("change", async e => {
-  try {
-    state = await api("/api/dsp/exciter", {enabled:e.target.checked});
-    renderExciter();
-    setStatus(e.target.checked ? "Bass Exciter ON" : "Bass Exciter OFF — PEQ vẫn hoạt động");
-  } catch(err) {
-    console.error(err);
-    setStatus("Không thể đổi Bass Exciter");
-    await refresh();
-  }
-});
-
-
-/* H2 */
-
-document
-  .getElementById("exciterH2")
-  .addEventListener(
-    "input",
-    e => {
-
-      const value =
-        parseFloat(e.target.value);
-
-      document
-        .getElementById("exciterH2Val")
-        .textContent =
-          `${value.toFixed(1)}%`;
-
-      scheduleExciterUpdate();
-
-    }
-  );
-
-
-/* H3 */
-
-document
-  .getElementById("exciterH3")
-  .addEventListener(
-    "input",
-    e => {
-
-      const value =
-        parseFloat(e.target.value);
-
-      document
-        .getElementById("exciterH3Val")
-        .textContent =
-          `${value.toFixed(1)}%`;
-
-      scheduleExciterUpdate();
-
-    }
-  );
-
-
-/* CROSSOVER */
-
-document
-  .getElementById("exciterXover")
-  .addEventListener(
-    "input",
-    e => {
-
-      const value =
-        parseFloat(e.target.value);
-
-      document
-        .getElementById("exciterXoverVal")
-        .textContent =
-          `${Math.round(value)} Hz`;
-
-      scheduleExciterUpdate();
-
-    }
-  );
-
-
-/* =========================================================
    HIGH SHELF
    ========================================================= */
 
@@ -1914,11 +1541,7 @@ document
 const characterControls = [
   ["characterWarmth", "warmth_pct", "characterWarmthVal"],
   ["characterDetail", "detail_pct", "characterDetailVal"],
-  ["characterDrive", "drive_pct", "characterDriveVal"],
-  ["characterSoftness", "softness_pct", "characterSoftnessVal"],
-  ["characterAir", "air_pct", "characterAirVal"],
-  ["characterMemory", "memory_pct", "characterMemoryVal"],
-  ["characterSpectral", "spectral_pct", "characterSpectralVal"]];
+  ["characterDrive", "drive_pct", "characterDriveVal"]];
 
 let characterTimer = null;
 
@@ -2007,18 +1630,13 @@ characterControls.forEach(([inputId, key, valueId]) => {
 
 const characterStageSwitches = [
   ["charStage1", 1],
-  ["charStage2", 2],
-  ["charStage3", 4]
+  ["charStage2", 2]
 ];
 
 const characterFeatureSwitches = [
   ["charFeatWarmth", 1],
   ["charFeatDetail", 2],
-  ["charFeatDrive", 4],
-  ["charFeatSoftness", 8],
-  ["charFeatAir", 16],
-  ["charFeatMemory", 32],
-  ["charFeatSpectral", 64]
+  ["charFeatDrive", 4]
 ];
 
 function renderCharacterDiagnostics(d){
@@ -2029,6 +1647,15 @@ function renderCharacterDiagnostics(d){
   characterFeatureSwitches.forEach(([id, bit]) => {
     document.getElementById(id).checked = (d.feature_mask & bit) !== 0;
   });
+
+  const avg = d.stage_avg_us || [];
+  const max = d.stage_max_us || [];
+  document.getElementById("charStage1Stats").textContent =
+    `${Number(avg[0] || 0)} / ${Number(max[0] || 0)} µs avg / max`;
+  document.getElementById("charStage2Stats").textContent =
+    `${Number(avg[1] || 0)} / ${Number(max[1] || 0)} µs avg / max`;
+  document.getElementById("charDiagBlocks").textContent =
+    `${Number(d.blocks || 0)} measured audio frames · ${Number(d.cpu_mhz || 0)} MHz`;
 
 }
 
@@ -2062,6 +1689,7 @@ async function updateCharacterDiagnostics(){
 });
 
 refreshCharacterDiagnostics();
+setInterval(refreshCharacterDiagnostics, 2500);
 
 
 /* =========================================================
@@ -2341,7 +1969,7 @@ document
         );
 
         setStatus(
-          "Đã lưu preset + Exciter + Analog Character V4 vào flash (NVS)"
+          "Đã lưu preset + Analog Character V5 Lite vào flash (NVS)"
         );
 
       }catch(err){
@@ -2472,7 +2100,6 @@ function renderAll(){
   renderPresets();
   renderBands();
   renderMaster();
-  renderExciter();
   renderCharacter();
   renderShelf();
   renderSpatial();
