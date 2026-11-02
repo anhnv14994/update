@@ -1599,12 +1599,13 @@ esp_err_t dsp_engine_init(void)
 
     ESP_LOGI(
         TAG,
-        "Character V4.1: enabled=%d mode=%d W=%.0f D=%.0f Drive=%.0f Soft=%.0f Air=%.0f Mem=%.0f Spectral=%.0f",
+        "Character diag: enabled=%d mode=%d W=%.0f D=%.0f Drive=%.0f Soft=%.0f Air=%.0f Mem=%.0f Spectral=%.0f stages=0x%02x features=0x%02x",
         s_character.enabled, (int)s_character.mode,
         s_character.warmth_pct, s_character.detail_pct,
         s_character.drive_pct, s_character.softness_pct,
         s_character.air_pct, s_character.memory_pct,
-        s_character.spectral_pct
+        s_character.spectral_pct, s_character.stage_mask,
+        s_character.feature_mask
     );
 
 
