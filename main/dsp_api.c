@@ -732,8 +732,82 @@ static esp_err_t api_exciter_handler(
 // Analog Character: profile A/B + realtime controls
 // ---------------------------------------------------------------------------
 
-static esp_err_t api_character_handler(httpd_req_t *req)
+static esp_err_t send_character_diag_state(httpd_req_t *req)
 {
+    dsp_character_diagnostics_t diag;
+    if (dsp_engine_get_character_diagnostics(&diag) != ESP_OK)
+        return httpd_resp_send_500(req);
+
+    cJSON *root = cJSON_CreateObject();
+    if (!root)
+        return httpd_resp_send_500(req);
+
+    cJSON_AddNumberToObject(root, "stage_mask", diag.stage_mask);
+    cJSON_AddNumberToObject(root, "feature_mask", diag.feature_mask);
+    cJSON_AddNumberToObject(root, "blocks", diag.blocks);
+    cJSON_AddNumberToObject(root, "cpu_mhz", diag.cpu_mhz);
+
+    cJSON *avg = cJSON_CreateArray();
+    cJSON *max = cJSON_CreateArray();
+    if (!avg || !max) {
+        cJSON_Delete(avg);
+        cJSON_Delete(max);
+        cJSON_Delete(root);
+        return httpd_resp_send_500(req);
+    }
+
+    for (int i = 0; i < 3; ++i) {
+        cJSON_AddItemToArray(avg, cJSON_CreateNumber(diag.stage_avg_us[i]));
+        cJSON_AddItemToArray(max, cJSON_CreateNumber(diag.stage_max_us[i]));
+    }
+    cJSON_AddItemToObject(root, "stage_avg_us", avg);
+    cJSON_AddItemToObject(root, "stage_max_us", max);
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json)
+        return httpd_resp_send_500(req);
+
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t err = httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+    free(json);
+    return err;
+}
+
+static esp_err_t api_character_diag_handler(httpd_req_t *req)
+{
+    if (req->method == HTTP_GET)
+        return send_character_diag_state(req);
+
+    char buf[128];
+    cJSON *body = parse_request_json(req, buf, sizeof(buf));
+    if (!body)
+        return send_error_json(req, 400, "invalid or empty json");
+
+    cJSON *stage = cJSON_GetObjectItem(body, "stage_mask");
+    cJSON *feature = cJSON_GetObjectItem(body, "feature_mask");
+    if (!cJSON_IsNumber(stage) || !cJSON_IsNumber(feature) ||
+        stage->valueint < 0 || stage->valueint > DSP_CHARACTER_STAGE_MASK_ALL ||
+        feature->valueint < 0 || feature->valueint > DSP_CHARACTER_FEATURE_MASK_ALL) {
+        cJSON_Delete(body);
+        return send_error_json(req, 400, "stage_mask 0..7 and feature_mask 0..127 required");
+    }
+
+    esp_err_t err = dsp_engine_set_character_diagnostics(
+        (uint8_t)stage->valueint, (uint8_t)feature->valueint);
+    cJSON_Delete(body);
+
+    if (err != ESP_OK)
+        return send_error_json(req, 400, "invalid Character diagnostic masks");
+
+    return send_character_diag_state(req);
+}
+
+
+/* ============================================================
+ * Analog Character handler
+ * ============================================================ */
+
     char buf[384];
     cJSON *body = parse_request_json(req, buf, sizeof(buf));
     if (!body)
@@ -1360,6 +1434,18 @@ esp_err_t dsp_api_register(
             .uri = "/api/dsp/character",
             .method = HTTP_POST,
             .handler = api_character_handler
+        },
+
+        {
+            .uri = "/api/dsp/character_diag",
+            .method = HTTP_GET,
+            .handler = api_character_diag_handler
+        },
+
+        {
+            .uri = "/api/dsp/character_diag",
+            .method = HTTP_POST,
+            .handler = api_character_diag_handler
         },
 
         {
