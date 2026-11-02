@@ -2929,10 +2929,16 @@ const uint8_t *dsp_engine_process(
             cs->spectral += smooth * (tsp - cs->spectral);
             cs->air_gain += smooth * (ta - cs->air_gain);
 
-            const bool nonlinear_target_active =
-                (tw > 0.00002f || td > 0.00002f);
-            const uint8_t requested_stage_mask =
-                nonlinear_target_active ? character.stage_mask : 0U;
+            uint8_t requested_stage_mask = 0U;
+            if (tw > 0.00002f) {
+                requested_stage_mask =
+                    character.stage_mask & DSP_CHARACTER_STAGE_ALL;
+            } else if (td > 0.00002f) {
+                /* Stage 1 is a warmth/body band and has no Detail-only path. */
+                requested_stage_mask =
+                    character.stage_mask &
+                    (DSP_CHARACTER_STAGE_2 | DSP_CHARACTER_STAGE_3);
+            }
             bool any_stage_active = false;
             for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
                 const float target =
