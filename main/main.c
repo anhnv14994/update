@@ -256,11 +256,6 @@ static void start_dns_server(void)
 
 void app_main(void)
 {
-    g_stereo_ctx = stereo_spatial_init(44100);
-    if (!g_stereo_ctx) {
-        ESP_LOGE("MAIN", "Failed to initialize stereo spatial");
-    }
-
     esp_err_t ret;
 
     ESP_LOGI(TAG, "ESP AirPlay Receiver starting...");
@@ -279,8 +274,11 @@ void app_main(void)
     // Initialize DSP engine (loads presets + active selection from NVS)
     dsp_engine_init();
 
-    // Initialize Stereo Spatial (loads saved mode from NVS, defaults OFF)
+    // Initialize Stereo Spatial once, after NVS/DSP initialization.
     g_stereo_ctx = stereo_spatial_init(44100);
+    if (!g_stereo_ctx) {
+        ESP_LOGE(TAG, "Failed to initialize stereo spatial");
+    }
 
     // Initialize I2S output
     i2s_output_init(app_config.bck_pin, app_config.ws_pin, app_config.dout_pin);
