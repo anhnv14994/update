@@ -787,8 +787,8 @@ static esp_err_t api_character_diag_handler(httpd_req_t *req)
     cJSON *stage = cJSON_GetObjectItem(body, "stage_mask");
     cJSON *feature = cJSON_GetObjectItem(body, "feature_mask");
     if (!cJSON_IsNumber(stage) || !cJSON_IsNumber(feature) ||
-        stage->valueint < 0 || stage->valueint > DSP_CHARACTER_STAGE_MASK_ALL ||
-        feature->valueint < 0 || feature->valueint > DSP_CHARACTER_FEATURE_MASK_ALL) {
+        stage->valueint < 0 || stage->valueint > (int)DSP_CHARACTER_STAGE_MASK_ALL ||
+        feature->valueint < 0 || feature->valueint > (int)DSP_CHARACTER_FEATURE_MASK_ALL) {
         cJSON_Delete(body);
         return send_error_json(req, 400, "stage_mask 0..7 and feature_mask 0..127 required");
     }
