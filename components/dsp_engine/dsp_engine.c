@@ -8,7 +8,7 @@
 
 #include "esp_log.h"
 #include "esp_cpu.h"
-#include "esp_clk.h"
+#include "esp_private/esp_clk.h"
 #include "esp_timer.h"
 #include "nvs.h"
 #include "nvs_flash.h"
