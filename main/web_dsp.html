@@ -1,0 +1,2347 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DSP SOUND</title>
+
+<style>
+:root{
+  --bg:#0d0f12;
+  --panel:#15181d;
+  --panel2:#1b1f26;
+  --line:#2a2f38;
+  --text:#e8eaed;
+  --dim:#8a919c;
+  --accent:#4fd1c5;
+  --accent-dim:#245a54;
+  --warn:#e0b155;
+  --shadow:0 8px 24px rgba(0,0,0,.5);
+}
+
+*{
+  box-sizing:border-box;
+}
+
+body{
+  margin:0;
+  min-height:100vh;
+  background:var(--bg);
+  color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  display:flex;
+  justify-content:center;
+  padding:24px 12px 64px;
+}
+
+.device{
+  width:100%;
+  max-width:460px;
+  background:var(--panel);
+  border-radius:20px;
+  box-shadow:var(--shadow);
+  border:1px solid var(--line);
+  overflow:hidden;
+}
+
+.titlebar{
+  text-align:center;
+  padding:20px 16px 14px;
+  letter-spacing:4px;
+  font-weight:700;
+  font-size:15px;
+  color:var(--dim);
+  border-bottom:1px solid var(--line);
+}
+
+.titlebar span{
+  color:var(--accent);
+}
+
+.back-link{
+  display:block;
+  text-align:center;
+  padding:10px;
+  font-size:12px;
+  color:var(--dim);
+  text-decoration:none;
+  border-bottom:1px solid var(--line);
+}
+
+.section{
+  padding:18px 20px;
+  border-bottom:1px solid var(--line);
+}
+
+.section:last-of-type{
+  border-bottom:none;
+}
+
+.presets{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px;
+}
+
+.preset-btn{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:12px 14px;
+  background:var(--panel2);
+  border:1px solid var(--line);
+  border-radius:10px;
+  cursor:pointer;
+  user-select:none;
+  transition:.15s;
+}
+
+.preset-btn:hover{
+  border-color:#46505b;
+}
+
+.preset-btn.active{
+  border-color:var(--accent);
+  background:#12302d;
+}
+
+.dot{
+  width:11px;
+  height:11px;
+  border-radius:50%;
+  border:2px solid var(--dim);
+  flex:none;
+}
+
+.preset-btn.active .dot{
+  border-color:var(--accent);
+  background:var(--accent);
+  box-shadow:0 0 8px var(--accent);
+}
+
+.preset-name{
+  font-size:13px;
+  font-weight:600;
+  letter-spacing:.5px;
+}
+
+.row-label{
+  display:flex;
+  justify-content:space-between;
+  font-size:12px;
+  color:var(--dim);
+  margin-bottom:6px;
+  letter-spacing:.5px;
+  text-transform:uppercase;
+}
+
+.row-label b{
+  color:var(--text);
+  font-weight:600;
+}
+
+input[type=range]{
+  -webkit-appearance:none;
+  width:100%;
+  height:4px;
+  border-radius:2px;
+  background:var(--line);
+  outline:none;
+}
+
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;
+  width:16px;
+  height:16px;
+  border-radius:50%;
+  background:var(--accent);
+  cursor:pointer;
+  box-shadow:0 0 6px rgba(79,209,197,.6);
+}
+
+input[type=range]::-moz-range-thumb{
+  width:16px;
+  height:16px;
+  border-radius:50%;
+  background:var(--accent);
+  border:none;
+  box-shadow:0 0 6px rgba(79,209,197,.6);
+}
+
+.master-row{
+  margin-bottom:4px;
+}
+
+.peq-title{
+  font-size:11px;
+  letter-spacing:2px;
+  color:var(--dim);
+  text-transform:uppercase;
+  margin-bottom:12px;
+  font-weight:700;
+}
+
+.peq-subtitle{
+  font-size:11px;
+  line-height:1.45;
+  color:#68717d;
+  margin:-5px 0 15px;
+}
+
+.band{
+  margin-bottom:17px;
+}
+
+.band:last-child{
+  margin-bottom:0;
+}
+
+.band-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  margin-bottom:6px;
+}
+
+.freq-wrap{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  min-width:120px;
+}
+
+.freq-input{
+  background:transparent;
+  border:none;
+  color:var(--text);
+  font-size:13px;
+  font-weight:600;
+  width:70px;
+  text-align:left;
+  padding:0;
+}
+
+.freq-input:focus{
+  outline:1px solid var(--accent-dim);
+  border-radius:4px;
+}
+
+.freq-role{
+  font-size:9px;
+  color:#68717d;
+  letter-spacing:.4px;
+  text-transform:uppercase;
+}
+
+.gain-q{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-size:12px;
+  color:var(--dim);
+}
+
+.q-input{
+  background:var(--panel2);
+  border:1px solid var(--line);
+  color:var(--text);
+  width:48px;
+  font-size:11px;
+  padding:2px 4px;
+  border-radius:4px;
+  text-align:center;
+}
+
+.gain-val{
+  width:58px;
+  text-align:right;
+  color:var(--accent);
+  font-variant-numeric:tabular-nums;
+}
+
+/* TOOLTIP */
+
+.tooltip{
+  position:relative;
+  cursor:help;
+}
+
+.tooltip::after{
+  content:attr(data-tip);
+  position:absolute;
+  left:0;
+  bottom:calc(100% + 8px);
+  width:270px;
+  padding:10px 11px;
+  background:#090b0e;
+  border:1px solid #39414b;
+  border-radius:9px;
+  color:#e8eaed;
+  font-size:11px;
+  line-height:1.5;
+  letter-spacing:0;
+  text-transform:none;
+  font-weight:400;
+  box-shadow:0 8px 24px rgba(0,0,0,.55);
+  opacity:0;
+  visibility:hidden;
+  pointer-events:none;
+  z-index:100;
+  transition:.12s;
+}
+
+.tooltip:hover::after{
+  opacity:1;
+  visibility:visible;
+}
+
+/* SPATIAL / FEATURES */
+
+.spatial-desc{
+  font-size:11px;
+  line-height:1.5;
+  color:var(--dim);
+  margin-top:12px;
+  padding:10px 11px;
+  background:var(--panel2);
+  border-radius:8px;
+  border:1px solid var(--line);
+}
+
+.feature{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:15px;
+  padding:13px 0;
+  border-top:1px solid var(--line);
+}
+
+.feature:first-of-type{
+  margin-top:14px;
+}
+
+.feature-text{
+  min-width:0;
+}
+
+.feature-name{
+  font-size:12px;
+  font-weight:600;
+  color:var(--text);
+  margin-bottom:3px;
+}
+
+.feature-info{
+  font-size:10px;
+  line-height:1.4;
+  color:var(--dim);
+}
+
+/* EXCITER */
+
+.exciter-note{
+  font-size:11px;
+  line-height:1.5;
+  color:var(--dim);
+  margin-top:4px;
+  padding:10px 11px;
+  background:var(--panel2);
+  border-radius:8px;
+  border:1px solid var(--line);
+}
+
+.exciter-note strong{
+  color:var(--text);
+  font-weight:600;
+}
+
+.exciter-range{
+  margin-top:4px;
+}
+
+/* SWITCH */
+
+.switch{
+  position:relative;
+  width:48px;
+  height:26px;
+  flex:none;
+}
+
+.switch input{
+  opacity:0;
+  width:0;
+  height:0;
+}
+
+.slider-toggle{
+  position:absolute;
+  inset:0;
+  background:var(--line);
+  border-radius:999px;
+  cursor:pointer;
+  transition:.2s;
+}
+
+.slider-toggle:before{
+  content:"";
+  position:absolute;
+  width:20px;
+  height:20px;
+  left:3px;
+  top:3px;
+  background:#fff;
+  border-radius:50%;
+  transition:.2s;
+}
+
+.switch input:checked + .slider-toggle{
+  background:var(--accent-dim);
+}
+
+.switch input:checked + .slider-toggle:before{
+  transform:translateX(22px);
+  background:var(--accent);
+}
+
+/* ACTIONS */
+
+.actions{
+  display:flex;
+  gap:10px;
+  padding:0 20px 20px;
+}
+
+.btn{
+  flex:1;
+  padding:10px;
+  border-radius:8px;
+  border:1px solid var(--line);
+  background:var(--panel2);
+  color:var(--text);
+  font-size:12px;
+  letter-spacing:1px;
+  cursor:pointer;
+  text-transform:uppercase;
+  font-weight:600;
+}
+
+.btn.primary{
+  background:var(--accent-dim);
+  border-color:var(--accent);
+  color:#eafff9;
+}
+
+.btn:active{
+  transform:scale(.97);
+}
+
+.status{
+  font-size:11px;
+  text-align:center;
+  color:var(--dim);
+  padding-bottom:14px;
+  height:14px;
+}
+
+.footer{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:16px 20px;
+  background:var(--panel2);
+}
+
+.toggle-label{
+  font-weight:700;
+  letter-spacing:2px;
+  font-size:13px;
+}
+
+/* MOBILE */
+
+@media(max-width:380px){
+
+  body{
+    padding:12px 7px 40px;
+  }
+
+  .device{
+    border-radius:16px;
+  }
+
+  .section{
+    padding:16px;
+  }
+
+  .tooltip::after{
+    width:235px;
+  }
+
+  .freq-role{
+    display:none;
+  }
+}
+</style>
+</head>
+
+<body>
+
+<div class="device">
+
+  <div class="titlebar">
+    DSP <span>SOUND</span>
+  </div>
+
+  <a class="back-link" href="/">
+    &larr; Cấu hình thiết bị (Wi-Fi / I2S / OTA)
+  </a>
+
+
+  <!-- PRESETS -->
+
+  <div class="section">
+
+    <div class="presets" id="presets"></div>
+
+  </div>
+
+
+  <!-- MASTER -->
+
+  <div class="section">
+
+    <div class="row-label master-row">
+      <span>Master</span>
+      <b id="masterVal">-3.0 dB</b>
+    </div>
+
+    <input
+      type="range"
+      id="master"
+      min="-24"
+      max="6"
+      step="0.1"
+      value="-3">
+
+  </div>
+
+
+  <!-- BASS HARMONIC EXCITER -->
+
+  <div class="section">
+
+    <div class="peq-title">
+      Bass Harmonic Exciter
+    </div>
+
+    <div class="peq-subtitle">
+      Tạo nhẹ harmonic từ bass sâu để tăng cảm giác rền, độ sâu và body
+      mà không cần tăng mạnh bass cơ bản.
+    </div>
+
+
+    <!-- ENABLE -->
+
+    <div class="feature" style="border-top:none; margin-top:0;">
+
+      <div class="feature-text">
+
+        <div
+          class="feature-name tooltip"
+          data-tip="Bass Exciter tạo H2/H3 từ thành phần bass thấp. H2 thiên về body và cảm giác sâu/rền; H3 thêm texture.">
+          Bass Exciter
+        </div>
+
+        <div class="feature-info">
+          H2 = Depth / Body · H3 = Texture
+        </div>
+
+      </div>
+
+      <label class="switch">
+
+        <input
+          type="checkbox"
+          id="exciterEnabled">
+
+        <span class="slider-toggle"></span>
+
+      </label>
+
+    </div>
+
+
+    <!-- H2 -->
+
+    <div class="band">
+
+      <div class="row-label">
+        <span>H2 — Depth / Body</span>
+        <b id="exciterH2Val">6.0%</b>
+      </div>
+
+      <input
+        class="exciter-range"
+        type="range"
+        id="exciterH2"
+        min="0"
+        max="12"
+        step="0.1"
+        value="6">
+
+    </div>
+
+
+    <!-- H3 -->
+
+    <div class="band">
+
+      <div class="row-label">
+        <span>H3 — Texture</span>
+        <b id="exciterH3Val">2.0%</b>
+      </div>
+
+      <input
+        class="exciter-range"
+        type="range"
+        id="exciterH3"
+        min="0"
+        max="6"
+        step="0.1"
+        value="2">
+
+    </div>
+
+
+    <!-- CROSSOVER -->
+
+    <div class="band">
+
+      <div class="row-label">
+        <span>Crossover</span>
+        <b id="exciterXoverVal">60 Hz</b>
+      </div>
+
+      <input
+        class="exciter-range"
+        type="range"
+        id="exciterXover"
+        min="30"
+        max="100"
+        step="1"
+        value="60">
+
+    </div>
+
+
+    <div class="exciter-note">
+      <strong>Gợi ý:</strong>
+      H2 là núm chính để tăng độ sâu/rền của bass.
+      H3 chỉ nên tăng nhẹ để thêm texture.
+      Mức bắt đầu tốt: <strong>H2 5–7%</strong>, <strong>H3 1–2%</strong>.
+      Nếu bass bị ù hoặc tiếng hơi gằn, giảm H3 trước; sau đó mới giảm H2.
+    </div>
+
+  </div>
+
+
+  <!-- ANALOG CHARACTER -->
+
+  <div class="section">
+
+    <div class="peq-title">Analog Character</div>
+
+    <div class="peq-subtitle">
+      Preamp DSP 3 tầng với saturation phụ thuộc tần số và memory feedback có kiểm soát. A thiên về body/mượt; B giữ độ tự nhiên và thoáng. Độc lập với Bass Harmonic Exciter.
+    </div>
+
+    <div class="presets" id="characterProfiles">
+      <div class="preset-btn" id="characterTube">
+        <span class="dot"></span>
+        <span class="preset-name">A · TUBE WARM</span>
+      </div>
+      <div class="preset-btn" id="characterBritish">
+        <span class="dot"></span>
+        <span class="preset-name">B · BRITISH NATURAL</span>
+      </div>
+    </div>
+
+    <div class="feature">
+      <div class="feature-text">
+        <div class="feature-name">Analog Character</div>
+        <div class="feature-info">Bật/tắt tầng tạo màu âm, không ảnh hưởng PEQ và Exciter</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="characterEnabled">
+        <span class="slider-toggle"></span>
+      </label>
+    </div>
+
+    <div class="band">
+      <div class="row-label"><span>Warmth — H2 / Vocal Body</span><b id="characterWarmthVal">0%</b></div>
+      <input class="exciter-range" type="range" id="characterWarmth" min="0" max="100" step="1" value="0">
+    </div>
+
+    <div class="band">
+      <div class="row-label"><span>Detail — H3 Texture</span><b id="characterDetailVal">0%</b></div>
+      <input class="exciter-range" type="range" id="characterDetail" min="0" max="100" step="1" value="0">
+    </div>
+
+    <div class="band">
+      <div class="row-label"><span>Drive — Harmonic Density</span><b id="characterDriveVal">0%</b></div>
+      <input class="exciter-range" type="range" id="characterDrive" min="0" max="100" step="1" value="0">
+    </div>
+
+    <div class="band">
+      <div class="row-label"><span>Softness — Dynamic Softening</span><b id="characterSoftnessVal">0%</b></div>
+      <input class="exciter-range" type="range" id="characterSoftness" min="0" max="100" step="1" value="0">
+    </div>
+
+    <div class="band">
+      <div class="row-label"><span>Air — High Frequency Openness</span><b id="characterAirVal">0%</b></div>
+      <input class="exciter-range" type="range" id="characterAir" min="0" max="100" step="1" value="0">
+    </div>
+
+    <div class="band">
+      <div class="row-label"><span>Memory — Bias / Charge / Supply</span><b id="characterMemoryVal">50%</b></div>
+      <input class="exciter-range" type="range" id="characterMemory" min="0" max="100" step="1" value="50">
+    </div>
+
+    <div class="band">
+      <div class="row-label"><span>Spectral — Stage Balance</span><b id="characterSpectralVal">50%</b></div>
+      <input class="exciter-range" type="range" id="characterSpectral" min="0" max="100" step="1" value="50">
+    </div>
+
+    <div class="exciter-note">
+      <strong>A — Tube Warm:</strong> tăng body và độ dày vocal, H2 trội hơn.<br>
+      <strong>B — British Natural:</strong> nhẹ hơn, giữ độ thoáng và articulation.<br>
+      Chọn A/B để nạp thiết lập gợi ý; sau đó kéo slider để tinh chỉnh. Thay đổi áp dụng realtime,
+      nhấn <strong>Save preset</strong> để lưu vào NVS.
+    </div>
+
+  </div>
+
+
+  <!-- PARAMETRIC EQ -->
+
+  <div class="section">
+
+    <div class="peq-title">
+      Parametric EQ
+    </div>
+
+    <div class="peq-subtitle">
+      10-band PEQ của preset đang chọn. Hover vào tần số để xem vai trò của từng vùng.
+    </div>
+
+    <div id="bands"></div>
+
+  </div>
+
+
+  <!-- HIGH SHELF -->
+
+  <div class="section">
+
+    <div class="peq-title">
+      High Shelf
+    </div>
+
+    <div class="band">
+
+      <div class="band-head">
+
+        <div class="freq-wrap">
+
+          <input
+            class="freq-input"
+            id="shelfFreq"
+            type="number"
+            step="100"
+            min="1000"
+            max="20000"
+            value="14000">
+
+          <span
+            class="freq-role tooltip"
+            data-tip="High Shelf tác động từ tần số này trở lên, dùng để chỉnh độ thoáng và không khí của dải cao.">
+            AIR
+          </span>
+
+        </div>
+
+        <div class="gain-q">
+
+          <span
+            class="gain-val"
+            id="shelfGainVal">
+            +0.3 dB
+          </span>
+
+        </div>
+
+      </div>
+
+      <input
+        type="range"
+        id="shelfGain"
+        min="-12"
+        max="12"
+        step="0.1"
+        value="0.3">
+
+    </div>
+
+  </div>
+
+
+  <!-- STEREO SPATIAL -->
+
+  <div class="section">
+
+    <div class="peq-title">
+      Stereo Spatial
+    </div>
+
+    <div
+      class="presets"
+      id="spatialModes"
+      style="grid-template-columns:repeat(3,1fr);">
+    </div>
+
+    <div
+      class="spatial-desc"
+      id="spatialDesc">
+    </div>
+
+
+    <!-- WIDTH EQ -->
+
+    <div class="feature">
+
+      <div class="feature-text">
+
+        <div
+          class="feature-name tooltip"
+          data-tip="Width EQ chỉ tác động lên thành phần Side (L−R). Side được high-pass khoảng 180 Hz rồi mới EQ, vì vậy bass thấp không bị mở rộng quá mức.">
+          Width EQ
+        </div>
+
+        <div class="feature-info">
+          EQ riêng cho Side — mở rộng có kiểm soát
+        </div>
+
+      </div>
+
+      <label class="switch">
+
+        <input
+          type="checkbox"
+          id="widthEq">
+
+        <span class="slider-toggle"></span>
+
+      </label>
+
+    </div>
+
+
+    <!-- MILD DECORRELATION -->
+
+    <div class="feature">
+
+      <div class="feature-text">
+
+        <div
+          class="feature-name tooltip"
+          data-tip="Mild Decorrelation là decor hiện tại của firmware: Side gốc được giữ 94%, 6% còn lại đi qua 3 all-pass stages để giảm tương quan pha rất nhẹ. Mục tiêu là mở không gian nhưng vẫn tự nhiên.">
+          Mild Decorrelation
+        </div>
+
+        <div class="feature-info">
+          94% direct + 6% phase-decorrelated
+        </div>
+
+      </div>
+
+      <label class="switch">
+
+        <input
+          type="checkbox"
+          id="decorrelation">
+
+        <span class="slider-toggle"></span>
+
+      </label>
+
+    </div>
+
+  </div>
+
+
+  <!-- ACTIONS -->
+
+  <div class="actions">
+
+    <button
+      class="btn"
+      id="resetBtn">
+      Reset preset
+    </button>
+
+    <button
+      class="btn primary"
+      id="saveBtn">
+      Save preset
+    </button>
+
+  </div>
+
+
+  <div
+    class="status"
+    id="status">
+  </div>
+
+
+  <!-- DSP -->
+
+  <div class="footer">
+
+    <span class="toggle-label">
+      DSP
+    </span>
+
+    <label class="switch">
+
+      <input
+        type="checkbox"
+        id="dspEnabled"
+        checked>
+
+      <span class="slider-toggle"></span>
+
+    </label>
+
+  </div>
+
+</div>
+
+
+<script>
+
+const presetNames = {
+  0:"B&O",
+  1:"DEVIALET",
+  2:"BOSE",
+  3:"DIY PURE"
+};
+
+const spatialModeNames = {
+  0:"OFF",
+  1:"NATURAL",
+  2:"WIDE"
+};
+
+let state = null;
+
+
+/* =========================================================
+   API
+   ========================================================= */
+
+async function api(path, body){
+
+  const res = await fetch(
+    path,
+    body ? {
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json"
+      },
+      body:JSON.stringify(body)
+    } : {}
+  );
+
+  if(!res.ok){
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+
+/* =========================================================
+   FORMAT
+   ========================================================= */
+
+function fmtDb(v){
+
+  v = Number(v);
+
+  const s = v >= 0 ? "+" : "";
+
+  return `${s}${v.toFixed(1)} dB`;
+}
+
+
+function fmtFreq(freq){
+
+  freq = Number(freq);
+
+  if(freq >= 1000){
+
+    const k = freq / 1000;
+
+    if(Number.isInteger(k))
+      return `${k}k`;
+
+    return `${k.toFixed(1)}k`;
+  }
+
+  return `${Math.round(freq)}`;
+}
+
+
+/* =========================================================
+   PEQ BAND DESCRIPTIONS
+   ========================================================= */
+
+const bandDescriptions = {
+
+  31:
+    "Trầm sâu / Sub Bass. Quyết định độ sâu và nền móng của bass. Tăng nhẹ nếu muốn bass xuống sâu và có trọng lượng hơn. Giảm nếu sub ù, rung hoặc thiếu kiểm soát.",
+
+  62:
+    "Bass sâu / Punch. Tạo lực cho kick và bass. Tăng nhẹ để bass có lực và độ nảy hơn. Giảm nếu bass phình hoặc quá nặng.",
+
+  125:
+    "Upper Bass. Quyết định độ đầy và độ dày của bass. Tăng nếu hệ thống hơi mỏng; giảm nếu bass bị dày, boomy hoặc lấn sang low-mid.",
+
+  250:
+    "Low-Mid / Body. Tạo thân cho vocal, guitar, piano và nhạc cụ. Giảm nhẹ thường giúp tiếng sạch và thoáng hơn; tăng nếu âm thanh quá mỏng.",
+
+  500:
+    "Warmth / Mud. Quyết định độ ấm và độ dày của vocal/nhạc cụ. Tăng để âm thanh ấm hơn; giảm nếu tiếng bị hộp, đục hoặc bí.",
+
+  1000:
+    "Mid / Vocal Core. Vùng lõi của vocal và nhiều nhạc cụ chính. Tăng nhẹ để vocal nổi rõ; giảm nếu trung âm quá dày hoặc quá gần.",
+
+  2000:
+    "Presence / Clarity. Tạo độ rõ và articulation của vocal, guitar và nhạc cụ. Tăng nhẹ để tăng clarity; giảm nếu vocal quá trực diện hoặc bắt đầu gắt.",
+
+  4000:
+    "Attack / Definition. Quyết định attack, độ sắc nét và articulation. Tăng rất nhẹ để âm thanh rõ và nhanh; giảm nếu tiếng cứng hoặc mệt.",
+
+  8000:
+    "Treble / Detail. Liên quan đến cymbal, S/T và độ sáng. Tăng nhẹ nếu âm thanh tối; giảm nếu treble chói, sib hoặc quá sắc.",
+
+  16000:
+    "Air / Sparkle. Tạo độ thoáng, không khí và ánh sáng ở dải cao. Tăng nhẹ để tiếng lung linh và mở; giảm nếu âm thanh quá sáng hoặc khô."
+};
+
+
+/* =========================================================
+   ACTIVE PRESET
+   ========================================================= */
+
+function activePreset(){
+
+  if(!state || !state.presets)
+    return null;
+
+  return state.presets.find(
+    p => Number(p.id) === Number(state.active)
+  );
+}
+
+
+/* =========================================================
+   PRESETS
+   ========================================================= */
+
+function renderPresets(){
+
+  const el =
+    document.getElementById("presets");
+
+  el.innerHTML = "";
+
+  if(!state || !state.presets)
+    return;
+
+  state.presets.forEach(p => {
+
+    const div =
+      document.createElement("div");
+
+    div.className =
+      "preset-btn" +
+      (
+        Number(p.id) === Number(state.active)
+        ? " active"
+        : ""
+      );
+
+    div.innerHTML = `
+      <span class="dot"></span>
+      <span class="preset-name">
+        ${p.name || presetNames[p.id] || "PRESET"}
+      </span>
+    `;
+
+    div.onclick = () => {
+      selectPreset(Number(p.id));
+    };
+
+    el.appendChild(div);
+
+  });
+}
+
+
+/* =========================================================
+   SELECT PRESET
+   ========================================================= */
+
+async function selectPreset(id){
+
+  try{
+
+    state =
+      await api(
+        "/api/dsp/select",
+        {
+          preset:id
+        }
+      );
+
+    renderAll();
+
+    setStatus(
+      `Đang dùng preset ${presetNames[id] || id} — áp dụng ngay`
+    );
+
+  }catch(err){
+
+    console.error(err);
+
+    setStatus(
+      "Không thể đổi preset"
+    );
+
+  }
+}
+
+
+/* =========================================================
+   PARAMETRIC EQ
+   ========================================================= */
+
+function renderBands(){
+
+  const p = activePreset();
+
+  const el =
+    document.getElementById("bands");
+
+  el.innerHTML = "";
+
+  if(!p || !Array.isArray(p.bands))
+    return;
+
+
+  p.bands.forEach((b,i)=>{
+
+    const freq =
+      Number(b.freq);
+
+    const gain =
+      Number(b.gain_db);
+
+    const q =
+      Number(b.q);
+
+    const description =
+      bandDescriptions[Math.round(freq)] ||
+      "Điều chỉnh mức năng lượng của vùng tần số này để thay đổi tonal balance.";
+
+
+    const row =
+      document.createElement("div");
+
+    row.className = "band";
+
+
+    row.innerHTML = `
+
+      <div class="band-head">
+
+        <div class="freq-wrap">
+
+          <input
+            class="freq-input tooltip"
+            type="number"
+            step="1"
+            min="20"
+            max="20000"
+            value="${Math.round(freq)}"
+            data-idx="${i}"
+            data-field="freq"
+            data-tip="${description}">
+
+          <span class="freq-role">
+            ${getBandRole(freq)}
+          </span>
+
+        </div>
+
+        <div class="gain-q">
+
+          <span>Q</span>
+
+          <input
+            class="q-input"
+            type="number"
+            step="0.05"
+            min="0.1"
+            max="10"
+            value="${q.toFixed(2)}"
+            data-idx="${i}"
+            data-field="q">
+
+          <span
+            class="gain-val"
+            data-idx="${i}"
+            data-role="gainval">
+            ${fmtDb(gain)}
+          </span>
+
+        </div>
+
+      </div>
+
+      <input
+        type="range"
+        min="-12"
+        max="12"
+        step="0.1"
+        value="${gain}"
+        data-idx="${i}"
+        data-role="gainslider">
+
+    `;
+
+    el.appendChild(row);
+
+  });
+
+
+  el
+    .querySelectorAll('[data-role="gainslider"]')
+    .forEach(slider => {
+
+      slider.addEventListener(
+        "input",
+        onBandGainInput
+      );
+
+      slider.addEventListener(
+        "change",
+        onBandGainCommit
+      );
+
+    });
+
+
+  el
+    .querySelectorAll(
+      'input[data-field="freq"], input[data-field="q"]'
+    )
+    .forEach(inp => {
+
+      inp.addEventListener(
+        "change",
+        onBandFieldCommit
+      );
+
+    });
+
+}
+
+
+function getBandRole(freq){
+
+  const f = Math.round(freq);
+
+  if(f <= 40) return "SUB";
+  if(f <= 80) return "BASS";
+  if(f <= 160) return "UPPER BASS";
+  if(f <= 320) return "LOW-MID";
+  if(f <= 700) return "WARMTH";
+  if(f <= 1500) return "VOCAL";
+  if(f <= 3000) return "PRESENCE";
+  if(f <= 6000) return "ATTACK";
+  if(f <= 10000) return "DETAIL";
+
+  return "AIR";
+}
+
+
+/* =========================================================
+   BAND GAIN
+   ========================================================= */
+
+function onBandGainInput(e){
+
+  const idx =
+    e.target.dataset.idx;
+
+  const value =
+    parseFloat(e.target.value);
+
+  const label =
+    document.querySelector(
+      `[data-role="gainval"][data-idx="${idx}"]`
+    );
+
+  if(label){
+    label.textContent =
+      fmtDb(value);
+  }
+}
+
+
+async function onBandGainCommit(e){
+
+  const idx =
+    parseInt(e.target.dataset.idx);
+
+  const p =
+    activePreset();
+
+  if(!p || !p.bands[idx])
+    return;
+
+  const b =
+    p.bands[idx];
+
+  try{
+
+    await api(
+      "/api/dsp/band",
+      {
+        band:idx,
+        freq:Number(b.freq),
+        gain_db:parseFloat(e.target.value),
+        q:Number(b.q)
+      }
+    );
+
+    await refresh();
+
+  }catch(err){
+
+    console.error(err);
+
+    setStatus(
+      "Không thể cập nhật EQ"
+    );
+
+  }
+}
+
+
+/* =========================================================
+   BAND FREQUENCY / Q
+   ========================================================= */
+
+async function onBandFieldCommit(e){
+
+  const idx =
+    parseInt(e.target.dataset.idx);
+
+  const field =
+    e.target.dataset.field;
+
+  const p =
+    activePreset();
+
+  if(!p || !p.bands[idx])
+    return;
+
+  const b =
+    {...p.bands[idx]};
+
+  b[field] =
+    parseFloat(e.target.value);
+
+  try{
+
+    await api(
+      "/api/dsp/band",
+      {
+        band:idx,
+        freq:Number(b.freq),
+        gain_db:Number(b.gain_db),
+        q:Number(b.q)
+      }
+    );
+
+    await refresh();
+
+  }catch(err){
+
+    console.error(err);
+
+    setStatus(
+      "Không thể cập nhật PEQ"
+    );
+
+  }
+}
+
+
+/* =========================================================
+   MASTER
+   ========================================================= */
+
+function renderMaster(){
+
+  const p =
+    activePreset();
+
+  if(!p)
+    return;
+
+  const value =
+    Number(p.master_gain_db);
+
+  document
+    .getElementById("master")
+    .value = value;
+
+  document
+    .getElementById("masterVal")
+    .textContent =
+      fmtDb(value);
+}
+
+
+document
+  .getElementById("master")
+  .addEventListener(
+    "input",
+    e => {
+
+      document
+        .getElementById("masterVal")
+        .textContent =
+          fmtDb(
+            parseFloat(e.target.value)
+          );
+
+    }
+  );
+
+
+document
+  .getElementById("master")
+  .addEventListener(
+    "change",
+    async e => {
+
+      try{
+
+        await api(
+          "/api/dsp/master",
+          {
+            gain_db:
+              parseFloat(e.target.value)
+          }
+        );
+
+        await refresh();
+
+      }catch(err){
+
+        console.error(err);
+
+      }
+
+    }
+  );
+
+
+/* =========================================================
+   BASS HARMONIC EXCITER
+   ========================================================= */
+
+function renderExciter(){
+
+  const e =
+    state && state.exciter;
+
+  if(!e)
+    return;
+
+
+  const enabled =
+    !!e.enabled;
+
+  const h2 =
+    Number(e.h2_pct);
+
+  const h3 =
+    Number(e.h3_pct);
+
+  const xover =
+    Number(e.crossover_hz);
+
+
+  document
+    .getElementById("exciterEnabled")
+    .checked =
+      enabled;
+
+
+  document
+    .getElementById("exciterH2")
+    .value =
+      h2;
+
+
+  document
+    .getElementById("exciterH3")
+    .value =
+      h3;
+
+
+  document
+    .getElementById("exciterXover")
+    .value =
+      xover;
+
+
+  document
+    .getElementById("exciterH2Val")
+    .textContent =
+      `${h2.toFixed(1)}%`;
+
+
+  document
+    .getElementById("exciterH3Val")
+    .textContent =
+      `${h3.toFixed(1)}%`;
+
+
+  document
+    .getElementById("exciterXoverVal")
+    .textContent =
+      `${Math.round(xover)} Hz`;
+}
+
+
+/*
+ * Debounce:
+ * slider vẫn chạy mượt trên trình duyệt,
+ * nhưng ESP32 không bị nhận hàng chục POST/giây.
+ */
+
+let exciterTimer = null;
+
+
+function scheduleExciterUpdate(){
+
+  clearTimeout(exciterTimer);
+
+  exciterTimer =
+    setTimeout(
+      updateExciter,
+      120
+    );
+}
+
+
+async function updateExciter(){
+
+  const enabled =
+    document
+      .getElementById("exciterEnabled")
+      .checked;
+
+  const h2 =
+    parseFloat(
+      document
+        .getElementById("exciterH2")
+        .value
+    );
+
+  const h3 =
+    parseFloat(
+      document
+        .getElementById("exciterH3")
+        .value
+    );
+
+  const xover =
+    parseFloat(
+      document
+        .getElementById("exciterXover")
+        .value
+    );
+
+
+  try{
+
+    state =
+      await api(
+        "/api/dsp/exciter",
+        {
+          enabled:enabled,
+          h2_pct:h2,
+          h3_pct:h3,
+          crossover_hz:xover
+        }
+      );
+
+    renderExciter();
+
+  }catch(err){
+
+    console.error(err);
+
+    setStatus(
+      "Không thể cập nhật Bass Exciter"
+    );
+
+  }
+}
+
+
+/* ENABLE */
+
+document.getElementById("exciterEnabled").addEventListener("change", async e => {
+  try {
+    state = await api("/api/dsp/exciter", {enabled:e.target.checked});
+    renderExciter();
+    setStatus(e.target.checked ? "Bass Exciter ON" : "Bass Exciter OFF — PEQ vẫn hoạt động");
+  } catch(err) {
+    console.error(err);
+    setStatus("Không thể đổi Bass Exciter");
+    await refresh();
+  }
+});
+
+
+/* H2 */
+
+document
+  .getElementById("exciterH2")
+  .addEventListener(
+    "input",
+    e => {
+
+      const value =
+        parseFloat(e.target.value);
+
+      document
+        .getElementById("exciterH2Val")
+        .textContent =
+          `${value.toFixed(1)}%`;
+
+      scheduleExciterUpdate();
+
+    }
+  );
+
+
+/* H3 */
+
+document
+  .getElementById("exciterH3")
+  .addEventListener(
+    "input",
+    e => {
+
+      const value =
+        parseFloat(e.target.value);
+
+      document
+        .getElementById("exciterH3Val")
+        .textContent =
+          `${value.toFixed(1)}%`;
+
+      scheduleExciterUpdate();
+
+    }
+  );
+
+
+/* CROSSOVER */
+
+document
+  .getElementById("exciterXover")
+  .addEventListener(
+    "input",
+    e => {
+
+      const value =
+        parseFloat(e.target.value);
+
+      document
+        .getElementById("exciterXoverVal")
+        .textContent =
+          `${Math.round(value)} Hz`;
+
+      scheduleExciterUpdate();
+
+    }
+  );
+
+
+/* =========================================================
+   HIGH SHELF
+   ========================================================= */
+
+function renderShelf(){
+
+  const p =
+    activePreset();
+
+  if(!p || !p.shelf)
+    return;
+
+  document
+    .getElementById("shelfFreq")
+    .value =
+      Math.round(
+        Number(p.shelf.freq)
+      );
+
+  document
+    .getElementById("shelfGain")
+    .value =
+      Number(p.shelf.gain_db);
+
+  document
+    .getElementById("shelfGainVal")
+    .textContent =
+      fmtDb(
+        Number(p.shelf.gain_db)
+      );
+}
+
+
+document
+  .getElementById("shelfGain")
+  .addEventListener(
+    "input",
+    e => {
+
+      document
+        .getElementById("shelfGainVal")
+        .textContent =
+          fmtDb(
+            parseFloat(e.target.value)
+          );
+
+    }
+  );
+
+
+document
+  .getElementById("shelfGain")
+  .addEventListener(
+    "change",
+    async e => {
+
+      const freq =
+        parseFloat(
+          document.getElementById("shelfFreq").value
+        );
+
+      try{
+
+        await api(
+          "/api/dsp/shelf",
+          {
+            freq:freq,
+            gain_db:
+              parseFloat(e.target.value)
+          }
+        );
+
+        await refresh();
+
+      }catch(err){
+
+        console.error(err);
+
+      }
+
+    }
+  );
+
+
+document
+  .getElementById("shelfFreq")
+  .addEventListener(
+    "change",
+    async e => {
+
+      const gain =
+        parseFloat(
+          document.getElementById("shelfGain").value
+        );
+
+      try{
+
+        await api(
+          "/api/dsp/shelf",
+          {
+            freq:
+              parseFloat(e.target.value),
+            gain_db:gain
+          }
+        );
+
+        await refresh();
+
+      }catch(err){
+
+        console.error(err);
+
+      }
+
+    }
+  );
+
+
+/* =========================================================
+   ANALOG CHARACTER — A/B + realtime controls
+   API state: state.character
+   ========================================================= */
+
+const characterControls = [
+  ["characterWarmth", "warmth_pct", "characterWarmthVal"],
+  ["characterDetail", "detail_pct", "characterDetailVal"],
+  ["characterDrive", "drive_pct", "characterDriveVal"],
+  ["characterSoftness", "softness_pct", "characterSoftnessVal"],
+  ["characterAir", "air_pct", "characterAirVal"],
+  ["characterMemory", "memory_pct", "characterMemoryVal"],
+  ["characterSpectral", "spectral_pct", "characterSpectralVal"]];
+
+let characterTimer = null;
+
+function renderCharacter(){
+  const c = state && state.character;
+  if(!c) return;
+
+  document.getElementById("characterEnabled").checked = !!c.enabled;
+
+  characterControls.forEach(([inputId, key, valueId]) => {
+    const value = Math.max(0, Math.min(100, Number(c[key] ?? 0)));
+    document.getElementById(inputId).value = value;
+    document.getElementById(valueId).textContent = `${Math.round(value)}%`;
+  });
+
+  const mode = Number(c.mode ?? 0);
+  document.getElementById("characterTube").classList.toggle("active", mode === 1);
+  document.getElementById("characterBritish").classList.toggle("active", mode === 2);
+}
+
+async function selectCharacterProfile(mode){
+  try{
+    state = await api("/api/dsp/character", {mode});
+    renderCharacter();
+    setStatus(mode === 1 ? "Analog Character: A — Tube Warm" : "Analog Character: B — British Natural");
+  }catch(err){
+    console.error(err);
+    setStatus("Không thể đổi Analog Character profile");
+  }
+}
+
+document.getElementById("characterTube").addEventListener("click", () => selectCharacterProfile(1));
+document.getElementById("characterBritish").addEventListener("click", () => selectCharacterProfile(2));
+
+document.getElementById("characterEnabled").addEventListener("change", async e => {
+  try{
+    state = await api("/api/dsp/character", {enabled:e.target.checked});
+    renderCharacter();
+    setStatus(e.target.checked ? "Analog Character ON" : "Analog Character OFF");
+  }catch(err){
+    console.error(err);
+    setStatus("Không thể bật/tắt Analog Character");
+    await refresh();
+  }
+});
+
+function characterPayload(){
+  const payload = {mode:0}; // any manual edit switches the profile label to CUSTOM
+  characterControls.forEach(([inputId, key]) => {
+    payload[key] = Number(document.getElementById(inputId).value);
+  });
+  return payload;
+}
+
+function scheduleCharacterUpdate(){
+  clearTimeout(characterTimer);
+  characterTimer = setTimeout(updateCharacter, 180);
+}
+
+async function updateCharacter(){
+  try{
+    state = await api("/api/dsp/character", characterPayload());
+    renderCharacter();
+  }catch(err){
+    console.error(err);
+    setStatus("Không thể cập nhật Analog Character");
+  }
+}
+
+characterControls.forEach(([inputId, key, valueId]) => {
+  const slider = document.getElementById(inputId);
+  slider.addEventListener("input", e => {
+    document.getElementById(valueId).textContent = `${Math.round(Number(e.target.value))}%`;
+    scheduleCharacterUpdate();
+  });
+  slider.addEventListener("change", () => {
+    clearTimeout(characterTimer);
+    updateCharacter();
+  });
+});
+
+
+/* =========================================================
+   SPATIAL
+   ========================================================= */
+
+function renderSpatial(){
+
+  const el =
+    document.getElementById("spatialModes");
+
+  el.innerHTML = "";
+
+  const mode =
+    Number(
+      state.spatial_mode ?? 0
+    );
+
+
+  [0,1,2].forEach(id => {
+
+    const div =
+      document.createElement("div");
+
+    div.className =
+      "preset-btn" +
+      (
+        id === mode
+        ? " active"
+        : ""
+      );
+
+    div.innerHTML = `
+      <span class="dot"></span>
+      <span class="preset-name">
+        ${spatialModeNames[id]}
+      </span>
+    `;
+
+    div.onclick = () => {
+      selectSpatial(id);
+    };
+
+    el.appendChild(div);
+
+  });
+
+
+  const descriptions = {
+
+    0:
+      "OFF — giữ nguyên stereo gốc, không xử lý Stereo Spatial.",
+
+    1:
+      "NATURAL — mở rộng nhẹ và tự nhiên. Center/vocal được giữ ổn định, bass thấp không bị mở rộng.",
+
+    2:
+      "WIDE — mở rộng rõ hơn. Side được xử lý mạnh hơn để tạo sân khấu rộng, nhưng bass thấp vẫn được kiểm soát."
+  };
+
+
+  document
+    .getElementById("spatialDesc")
+    .textContent =
+      descriptions[mode];
+
+
+  document
+    .getElementById("widthEq")
+    .checked =
+      !!state.enable_width_eq;
+
+
+  document
+    .getElementById("decorrelation")
+    .checked =
+      !!state.enable_decorrelator;
+
+}
+
+
+async function selectSpatial(id){
+
+  try{
+
+    state =
+      await api(
+        "/api/dsp/spatial",
+        {
+          mode:id,
+
+          enable_width_eq:
+            document
+              .getElementById("widthEq")
+              .checked,
+
+          enable_decorrelator:
+            document
+              .getElementById("decorrelation")
+              .checked
+        }
+      );
+
+    renderAll();
+
+    setStatus(
+      `Stereo Spatial: ${spatialModeNames[id]}`
+    );
+
+  }catch(err){
+
+    console.error(err);
+
+    setStatus(
+      "Không thể cập nhật Stereo Spatial"
+    );
+
+  }
+}
+
+
+/* =========================================================
+   WIDTH EQ
+   ========================================================= */
+
+document
+  .getElementById("widthEq")
+  .addEventListener(
+    "change",
+    async () => {
+
+      try{
+
+        state =
+          await api(
+            "/api/dsp/spatial",
+            {
+              mode:
+                Number(
+                  state.spatial_mode ?? 0
+                ),
+
+              enable_width_eq:
+                document
+                  .getElementById("widthEq")
+                  .checked,
+
+              enable_decorrelator:
+                document
+                  .getElementById("decorrelation")
+                  .checked
+            }
+          );
+
+        renderAll();
+
+        setStatus(
+          "Width EQ updated"
+        );
+
+      }catch(err){
+
+        console.error(err);
+
+      }
+
+    }
+  );
+
+
+/* =========================================================
+   MILD DECORRELATION
+   ========================================================= */
+
+document
+  .getElementById("decorrelation")
+  .addEventListener(
+    "change",
+    async () => {
+
+      try{
+
+        state =
+          await api(
+            "/api/dsp/spatial",
+            {
+              mode:
+                Number(
+                  state.spatial_mode ?? 0
+                ),
+
+              enable_width_eq:
+                document
+                  .getElementById("widthEq")
+                  .checked,
+
+              enable_decorrelator:
+                document
+                  .getElementById("decorrelation")
+                  .checked
+            }
+          );
+
+        renderAll();
+
+        setStatus(
+          "Mild Decorrelation updated"
+        );
+
+      }catch(err){
+
+        console.error(err);
+
+      }
+
+    }
+  );
+
+
+/* =========================================================
+   DSP ENABLE
+   ========================================================= */
+
+document
+  .getElementById("dspEnabled")
+  .addEventListener(
+    "change",
+    async e => {
+
+      try{
+
+        state =
+          await api(
+            "/api/dsp/enabled",
+            {
+              enabled:
+                e.target.checked
+            }
+          );
+
+        renderAll();
+
+        setStatus(
+          e.target.checked
+          ? "DSP ON"
+          : "DSP OFF (bypass)"
+        );
+
+      }catch(err){
+
+        console.error(err);
+
+      }
+
+    }
+  );
+
+
+/* =========================================================
+   SAVE
+   ========================================================= */
+
+document
+  .getElementById("saveBtn")
+  .addEventListener(
+    "click",
+    async () => {
+
+      try{
+
+        await api(
+          "/api/dsp/save",
+          {
+            preset:
+              state.active
+          }
+        );
+
+        setStatus(
+          "Đã lưu preset + Exciter + Analog Character V4 vào flash (NVS)"
+        );
+
+      }catch(err){
+
+        console.error(err);
+
+        setStatus(
+          "Không thể lưu preset"
+        );
+
+      }
+
+    }
+  );
+
+
+/* =========================================================
+   RESET
+   ========================================================= */
+
+document
+  .getElementById("resetBtn")
+  .addEventListener(
+    "click",
+    async () => {
+
+      const id =
+        Number(state.active);
+
+      if(
+        !confirm(
+          `Khôi phục preset ${presetNames[id] || id} về mặc định gốc?`
+        )
+      ){
+        return;
+      }
+
+      try{
+
+        state =
+          await api(
+            "/api/dsp/reset",
+            {
+              preset:id
+            }
+          );
+
+        renderAll();
+
+        setStatus(
+          "Đã khôi phục về mặc định"
+        );
+
+      }catch(err){
+
+        console.error(err);
+
+        setStatus(
+          "Không thể reset preset"
+        );
+
+      }
+
+    }
+  );
+
+
+/* =========================================================
+   STATUS
+   ========================================================= */
+
+function setStatus(msg){
+
+  const el =
+    document.getElementById("status");
+
+  el.textContent = msg;
+
+  if(msg){
+
+    setTimeout(() => {
+
+      if(el.textContent === msg){
+        el.textContent = "";
+      }
+
+    },1500);
+
+  }
+
+}
+
+
+/* =========================================================
+   REFRESH
+   ========================================================= */
+
+async function refresh(){
+
+  try{
+
+    state =
+      await api(
+        "/api/dsp/state"
+      );
+
+    renderAll();
+
+  }catch(err){
+
+    console.error(err);
+
+    setStatus(
+      "Không đọc được DSP state"
+    );
+
+  }
+
+}
+
+
+/* =========================================================
+   RENDER ALL
+   ========================================================= */
+
+function renderAll(){
+
+  renderPresets();
+  renderBands();
+  renderMaster();
+  renderExciter();
+  renderCharacter();
+  renderShelf();
+  renderSpatial();
+
+  document
+    .getElementById("dspEnabled")
+    .checked =
+      state.enabled !== false;
+}
+
+
+/* =========================================================
+   INIT
+   ========================================================= */
+
+refresh();
+
+</script>
+
+</body>
+</html>

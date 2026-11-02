@@ -1,0 +1,68 @@
+  <!-- ANALOG CHARACTER -->
+
+  <div class="section">
+
+    <div class="peq-title">Analog Character</div>
+
+    <div class="peq-subtitle">
+      Tạo màu âm nhẹ trên vocal và mid. A thiên về độ dày/mượt; B giữ độ tự nhiên và thoáng.
+      Độc lập với Bass Harmonic Exciter.
+    </div>
+
+    <div class="presets" id="characterProfiles">
+      <div class="preset-btn" id="characterTube">
+        <span class="dot"></span>
+        <span class="preset-name">A · TUBE WARM</span>
+      </div>
+      <div class="preset-btn" id="characterBritish">
+        <span class="dot"></span>
+        <span class="preset-name">B · BRITISH NATURAL</span>
+      </div>
+    </div>
+
+    <div class="feature">
+      <div class="feature-text">
+        <div class="feature-name">Analog Character</div>
+        <div class="feature-info">Bật/tắt tầng tạo màu âm, không ảnh hưởng PEQ và Exciter</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="characterEnabled">
+        <span class="slider-toggle"></span>
+      </label>
+    </div>
+
+    <div class="band">
+      <div class="row-label"><span>Warmth — H2 / Vocal Body</span><b id="characterWarmthVal">0%</b></div>
+      <input class="exciter-range" type="range" id="characterWarmth" min="0" max="100" step="1" value="0">
+    </div>
+
+    <div class="band">
+      <div class="row-label"><span>Detail — H3 Texture</span><b id="characterDetailVal">0%</b></div>
+      <input class="exciter-range" type="range" id="characterDetail" min="0" max="100" step="1" value="0">
+    </div>
+
+    <div class="band">
+      <div class="row-label"><span>Drive — Harmonic Density</span><b id="characterDriveVal">0%</b></div>
+      <input class="exciter-range" type="range" id="characterDrive" min="0" max="100" step="1" value="0">
+    </div>
+
+    <div class="band">
+      <div class="row-label"><span>Softness — Dynamic Softening</span><b id="characterSoftnessVal">0%</b></div>
+      <input class="exciter-range" type="range" id="characterSoftness" min="0" max="100" step="1" value="0">
+    </div>
+
+    <div class="band">
+      <div class="row-label"><span>Air — High Frequency Openness</span><b id="characterAirVal">0%</b></div>
+      <input class="exciter-range" type="range" id="characterAir" min="0" max="100" step="1" value="0">
+    </div>
+
+    <div class="exciter-note">
+      <strong>A — Tube Warm:</strong> tăng body và độ dày vocal, H2 trội hơn.<br>
+      <strong>B — British Natural:</strong> nhẹ hơn, giữ độ thoáng và articulation.<br>
+      Chọn A/B để nạp thiết lập gợi ý; sau đó kéo slider để tinh chỉnh. Thay đổi áp dụng realtime,
+      nhấn <strong>Save preset</strong> để lưu vào NVS.
+    </div>
+
+  </div>
+
+
