@@ -9,6 +9,10 @@
 #include "esp_cpu.h"
 #include "sdkconfig.h"
 
+#if CONFIG_DSP_PEQ_USE_ESP_DSP
+#include "dsps_biquad.h"
+#endif
+
 #include "esp_log.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -133,7 +137,18 @@ static biquad_coef_t  s_active_coefs[DSP_NUM_STAGES];
 
 static float          s_active_master_linear = 1.0f;
 
+#if CONFIG_DSP_PEQ_USE_ESP_DSP
+/*
+ * Experimental Phase 3 PEQ backend:
+ * interleaved stereo float block + ESP-DSP stereo DF-II kernel.
+ * Holds the largest 2048-byte RAOP PCM block (512 stereo frames).
+ */
+#define DSP_PEQ_MAX_FLOATS (DSP_SCRATCH_MAX_BYTES / sizeof(int16_t))
+static float s_peq_interleaved[DSP_PEQ_MAX_FLOATS];
+static float s_peq_state[DSP_NUM_STAGES][4]; /* w0L,w1L,w0R,w1R */
+#else
 static biquad_state_t s_state[DSP_NUM_STAGES][2];
+#endif
 
 
 /* ============================================================
@@ -1149,11 +1164,11 @@ esp_err_t dsp_engine_init(void)
      * Reset PEQ states.
      */
 
-    memset(
-        s_state,
-        0,
-        sizeof(s_state)
-    );
+#if CONFIG_DSP_PEQ_USE_ESP_DSP
+    memset(s_peq_state, 0, sizeof(s_peq_state));
+#else
+    memset(s_state, 0, sizeof(s_state));
+#endif
 
 
     /*
@@ -1275,6 +1290,11 @@ esp_err_t dsp_engine_init(void)
         s_enabled,
         (int)s_active
     );
+#if CONFIG_DSP_PEQ_USE_ESP_DSP
+    ESP_LOGI(TAG, "PEQ backend: ESP-DSP stereo block biquad (experimental)");
+#else
+    ESP_LOGI(TAG, "PEQ backend: native transposed DF-II");
+#endif
 
 
     ESP_LOGI(
@@ -2162,9 +2182,10 @@ static const uint8_t *dsp_engine_process_internal(
     }
 
 
+#if !CONFIG_DSP_PEQ_USE_ESP_DSP
     const int16_t *in =
         (const int16_t *)pcm_in;
-
+#endif
 
     /*
      * Phase 2: the pipeline tap may supply its DSP-ring frame as the
@@ -2173,6 +2194,36 @@ static const uint8_t *dsp_engine_process_internal(
      */
     int16_t *out =
         (int16_t *)(pcm_out ? pcm_out : s_scratch);
+
+#if CONFIG_DSP_PEQ_USE_ESP_DSP
+    if ((frames * 2U) > DSP_PEQ_MAX_FLOATS) {
+        return pcm_in;
+    }
+
+    /* PCM16 -> interleaved float once per block. */
+    const int16_t *pcm_samples = (const int16_t *)pcm_in;
+    const float pcm_scale = 1.0f / 32768.0f;
+    for (size_t sample = 0; sample < frames * 2U; ++sample) {
+        s_peq_interleaved[sample] = (float)pcm_samples[sample] * pcm_scale;
+    }
+
+    /*
+     * Run the complete PEQ cascade block-wise. ESP-DSP's stereo kernel
+     * consumes L/R interleaved samples and keeps two DF-II states/channel.
+     * Filter coefficients are unchanged; only the state realization differs
+     * from the native transposed DF-II implementation.
+     */
+    for (uint8_t stage = 0; stage < num_stages; ++stage) {
+        if (dsps_biquad_sf32(
+                s_peq_interleaved,
+                s_peq_interleaved,
+                (int)frames,
+                (float *)&coefs[stage],
+                s_peq_state[stage]) != ESP_OK) {
+            return pcm_in;
+        }
+    }
+#endif
 
 
     /*
@@ -2322,60 +2373,20 @@ static const uint8_t *dsp_engine_process_internal(
         if (interaction_for_stage2)
             current_interaction_scale += interaction_scale_step;
 
-        float l =
-            (float)in[i * 2] /
-            32768.0f;
+#if CONFIG_DSP_PEQ_USE_ESP_DSP
+        float yl = s_peq_interleaved[i * 2U];
+        float yr = s_peq_interleaved[i * 2U + 1U];
+#else
+        float yl = (float)in[i * 2U] * (1.0f / 32768.0f);
+        float yr = (float)in[i * 2U + 1U] * (1.0f / 32768.0f);
 
-
-        float r =
-            (float)in[i * 2 + 1] /
-            32768.0f;
-
-
-        /*
-         * ----------------------------------------------------
-         * Original 10-band PEQ + shelf
-         * ----------------------------------------------------
-         */
-
-        float yl =
-            l;
-
-        float yr =
-            r;
-
-
-        for (uint8_t stage = 0;
-             stage < num_stages;
-             stage++) {
-
-            const biquad_coef_t *c =
-                &coefs[stage];
-
-
-            /*
-             * Left
-             */
-
-            yl =
-                biquad_process_sample(
-                    yl,
-                    c,
-                    &s_state[stage][0]
-                );
-
-
-            /*
-             * Right
-             */
-
-            yr =
-                biquad_process_sample(
-                    yr,
-                    c,
-                    &s_state[stage][1]
-                );
+        /* Native transposed DF-II PEQ cascade (reference backend). */
+        for (uint8_t stage = 0; stage < num_stages; ++stage) {
+            const biquad_coef_t *c = &coefs[stage];
+            yl = biquad_process_sample(yl, c, &s_state[stage][0]);
+            yr = biquad_process_sample(yr, c, &s_state[stage][1]);
         }
+#endif
 
 
         /*

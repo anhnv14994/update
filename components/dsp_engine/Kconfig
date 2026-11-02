@@ -9,3 +9,15 @@ config DSP_CHARACTER_PROFILE
         only for profiling builds. Keep disabled for normal playback.
 
 endmenu
+
+config DSP_PEQ_USE_ESP_DSP
+    bool "Use ESP-DSP stereo block biquad for PEQ"
+    depends on IDF_TARGET_ESP32S3
+    default n
+    help
+        Experimental Phase 3 backend. Converts each PCM block to interleaved
+        float, then runs the PEQ cascade with ESP-DSP's stereo biquad kernel.
+        This preserves the filter coefficients but uses a DF-II state
+        realization instead of the native transposed DF-II implementation.
+        Keep disabled for the reference backend. Enable for A/B CPU and
+        listening tests before making it the default.
