@@ -808,6 +808,8 @@ static esp_err_t api_character_diag_handler(httpd_req_t *req)
  * Analog Character handler
  * ============================================================ */
 
+static esp_err_t api_character_handler(httpd_req_t *req)
+{
     char buf[384];
     cJSON *body = parse_request_json(req, buf, sizeof(buf));
     if (!body)
