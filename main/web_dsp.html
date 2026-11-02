@@ -679,6 +679,20 @@ input[type=range]::-moz-range-thumb{
       </label>
     </div>
 
+    <div class="peq-title" style="margin-top:18px;">PROCESSING STAGES · A/B</div>
+    <div class="feature">
+      <div class="feature-text"><div class="feature-name">Stage 1 · Low-mid body</div><div class="feature-info">Source band 90–650 Hz</div></div>
+      <label class="switch"><input type="checkbox" id="characterStage1" checked><span class="slider-toggle"></span></label>
+    </div>
+    <div class="feature">
+      <div class="feature-text"><div class="feature-name">Stage 2 · Vocal core</div><div class="feature-info">Source band 320 Hz–2.1 kHz</div></div>
+      <label class="switch"><input type="checkbox" id="characterStage2" checked><span class="slider-toggle"></span></label>
+    </div>
+    <div class="feature">
+      <div class="feature-text"><div class="feature-name">Stage 3 · Presence texture</div><div class="feature-info">Source band 1.7–4.6 kHz</div></div>
+      <label class="switch"><input type="checkbox" id="characterStage3" checked><span class="slider-toggle"></span></label>
+    </div>
+
     <div class="band">
       <div class="row-label"><span>Warmth — H2 / Vocal Body</span><b id="characterWarmthVal">0%</b></div>
       <input class="exciter-range" type="range" id="characterWarmth" min="0" max="100" step="1" value="0">
@@ -712,6 +726,36 @@ input[type=range]::-moz-range-thumb{
     <div class="band">
       <div class="row-label"><span>Spectral — Stage Balance</span><b id="characterSpectralVal">50%</b></div>
       <input class="exciter-range" type="range" id="characterSpectral" min="0" max="100" step="1" value="50">
+    </div>
+
+    <div class="peq-title" style="margin-top:18px;">PARAMETER BYPASS · A/B</div>
+    <div class="feature">
+      <div class="feature-text"><div class="feature-name">Warmth</div><div class="feature-info">H2 / Vocal Body contribution</div></div>
+      <label class="switch"><input type="checkbox" id="characterWarmthOn" checked><span class="slider-toggle"></span></label>
+    </div>
+    <div class="feature">
+      <div class="feature-text"><div class="feature-name">Detail</div><div class="feature-info">H3 / Harmonic texture contribution</div></div>
+      <label class="switch"><input type="checkbox" id="characterDetailOn" checked><span class="slider-toggle"></span></label>
+    </div>
+    <div class="feature">
+      <div class="feature-text"><div class="feature-name">Drive</div><div class="feature-info">Overall nonlinear drive multiplier</div></div>
+      <label class="switch"><input type="checkbox" id="characterDriveOn" checked><span class="slider-toggle"></span></label>
+    </div>
+    <div class="feature">
+      <div class="feature-text"><div class="feature-name">Softness</div><div class="feature-info">Peak-dependent harmonic softening</div></div>
+      <label class="switch"><input type="checkbox" id="characterSoftnessOn" checked><span class="slider-toggle"></span></label>
+    </div>
+    <div class="feature">
+      <div class="feature-text"><div class="feature-name">Air</div><div class="feature-info">Independent high-frequency shelf</div></div>
+      <label class="switch"><input type="checkbox" id="characterAirOn" checked><span class="slider-toggle"></span></label>
+    </div>
+    <div class="feature">
+      <div class="feature-text"><div class="feature-name">Memory</div><div class="feature-info">Charge / coupling / supply state processing</div></div>
+      <label class="switch"><input type="checkbox" id="characterMemoryOn" checked><span class="slider-toggle"></span></label>
+    </div>
+    <div class="feature">
+      <div class="feature-text"><div class="feature-name">Spectral</div><div class="feature-info">Frequency-dependent stage balance</div></div>
+      <label class="switch"><input type="checkbox" id="characterSpectralOn" checked><span class="slider-toggle"></span></label>
     </div>
 
     <div class="exciter-note">
@@ -1834,6 +1878,22 @@ const characterControls = [
   ["characterMemory", "memory_pct", "characterMemoryVal"],
   ["characterSpectral", "spectral_pct", "characterSpectralVal"]];
 
+const characterStageSwitches = [
+  ["characterStage1", 0],
+  ["characterStage2", 1],
+  ["characterStage3", 2]
+];
+
+const characterFeatureSwitches = [
+  ["characterWarmthOn", 0],
+  ["characterDetailOn", 1],
+  ["characterDriveOn", 2],
+  ["characterSoftnessOn", 3],
+  ["characterAirOn", 4],
+  ["characterMemoryOn", 5],
+  ["characterSpectralOn", 6]
+];
+
 let characterTimer = null;
 
 function renderCharacter(){
@@ -1846,6 +1906,15 @@ function renderCharacter(){
     const value = Math.max(0, Math.min(100, Number(c[key] ?? 0)));
     document.getElementById(inputId).value = value;
     document.getElementById(valueId).textContent = `${Math.round(value)}%`;
+  });
+
+  const stageMask = Number(c.stage_mask ?? 7);
+  const featureMask = Number(c.feature_mask ?? 127);
+  characterStageSwitches.forEach(([id, bit]) => {
+    document.getElementById(id).checked = !!(stageMask & (1 << bit));
+  });
+  characterFeatureSwitches.forEach(([id, bit]) => {
+    document.getElementById(id).checked = !!(featureMask & (1 << bit));
   });
 
   const mode = Number(c.mode ?? 0);
@@ -1884,6 +1953,11 @@ function characterPayload(){
   characterControls.forEach(([inputId, key]) => {
     payload[key] = Number(document.getElementById(inputId).value);
   });
+
+  payload.stage_mask = characterStageSwitches.reduce((mask, [id, bit]) =>
+    mask | (document.getElementById(id).checked ? (1 << bit) : 0), 0);
+  payload.feature_mask = characterFeatureSwitches.reduce((mask, [id, bit]) =>
+    mask | (document.getElementById(id).checked ? (1 << bit) : 0), 0);
   return payload;
 }
 
@@ -1911,6 +1985,21 @@ characterControls.forEach(([inputId, key, valueId]) => {
   slider.addEventListener("change", () => {
     clearTimeout(characterTimer);
     updateCharacter();
+  });
+});
+
+[...characterStageSwitches, ...characterFeatureSwitches].forEach(([id]) => {
+  document.getElementById(id).addEventListener("change", async () => {
+    try {
+      clearTimeout(characterTimer);
+      state = await api("/api/dsp/character", characterPayload());
+      renderCharacter();
+      setStatus("Character diagnostic bypass updated");
+    } catch (err) {
+      console.error(err);
+      setStatus("Không thể đổi công tắc Character");
+      await refresh();
+    }
   });
 });
 
