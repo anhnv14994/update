@@ -39,7 +39,8 @@ static const char *TAG = "audio_buffer";
 #define DSP_PIPE_FRAMES           16
 #define DSP_TASK_STACK_SIZE       8192
 #define DSP_TASK_PRIORITY         2
-#define DSP_TASK_CORE             0
+/* Share Core 1 with the higher-priority output task; keep Core 0 freer for Wi-Fi/RAOP. */
+#define DSP_TASK_CORE             1
 
 #define AUDIO_TASK_STACK_SIZE     12288
 #define AUDIO_TASK_PRIORITY       3
@@ -81,6 +82,8 @@ typedef struct {
     _Atomic uint32_t tap_calls;
     _Atomic uint32_t dsp_waits;
     _Atomic uint32_t dsp_drops;
+    _Atomic uint32_t dsp_total_us;
+    _Atomic uint32_t dsp_max_us;
     uint32_t last_log_ms;
 } audio_stats_t;
 
@@ -239,6 +242,8 @@ static void stats_reset(void)
     atomic_store_explicit(&out_stats.tap_calls, 0, memory_order_relaxed);
     atomic_store_explicit(&out_stats.dsp_waits, 0, memory_order_relaxed);
     atomic_store_explicit(&out_stats.dsp_drops, 0, memory_order_relaxed);
+    atomic_store_explicit(&out_stats.dsp_total_us, 0, memory_order_relaxed);
+    atomic_store_explicit(&out_stats.dsp_max_us, 0, memory_order_relaxed);
     out_stats.last_log_ms = gettime_ms();
 }
 
@@ -568,10 +573,34 @@ static void audio_dsp_task(void *arg)
             break;
 
         if (audio_buf.tap_cb) {
+            const int64_t dsp_start_us = esp_timer_get_time();
+
             audio_buf.tap_cb(
                 dst->data,
                 dst->len,
                 audio_buf.tap_user_ctx);
+
+            const uint32_t dsp_elapsed_us =
+                (uint32_t)(esp_timer_get_time() - dsp_start_us);
+
+            atomic_fetch_add_explicit(
+                &out_stats.dsp_total_us,
+                dsp_elapsed_us,
+                memory_order_relaxed);
+
+            uint32_t previous_max =
+                atomic_load_explicit(
+                    &out_stats.dsp_max_us,
+                    memory_order_relaxed);
+
+            while (dsp_elapsed_us > previous_max &&
+                   !atomic_compare_exchange_weak_explicit(
+                       &out_stats.dsp_max_us,
+                       &previous_max,
+                       dsp_elapsed_us,
+                       memory_order_relaxed,
+                       memory_order_relaxed)) {
+            }
 
             atomic_fetch_add_explicit(
                 &out_stats.tap_calls,
@@ -1283,6 +1312,19 @@ static void audio_output_task(void *arg)
                     &out_stats.tap_calls,
                     memory_order_relaxed);
 
+            uint32_t dsp_total_us =
+                atomic_load_explicit(
+                    &out_stats.dsp_total_us,
+                    memory_order_relaxed);
+
+            uint32_t dsp_max_us =
+                atomic_load_explicit(
+                    &out_stats.dsp_max_us,
+                    memory_order_relaxed);
+
+            uint32_t dsp_avg_us =
+                tap_calls ? (dsp_total_us / tap_calls) : 0;
+
             uint32_t dsp_waits =
                 atomic_load_explicit(
                     &out_stats.dsp_waits,
@@ -1307,6 +1349,8 @@ static void audio_output_task(void *arg)
                 "drops=%u "
                 "overruns=%u "
                 "tap=%u "
+                "dsp_avg=%u us "
+                "dsp_max=%u us "
                 "dsp_wait=%u "
                 "dsp_drop=%u "
                 "dma_lead=%d ms "
@@ -1318,6 +1362,8 @@ static void audio_output_task(void *arg)
                 drops,
                 overruns,
                 tap_calls,
+                dsp_avg_us,
+                dsp_max_us,
                 dsp_waits,
                 dsp_drops,
                 dma_lead,
