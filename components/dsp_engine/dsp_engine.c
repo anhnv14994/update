@@ -435,14 +435,27 @@ static inline float clampf_local(float x, float lo, float hi)
     return x;
 }
 
-/* Intermediate DSP quantization; TPDF dither is applied once at final I2S output. */
+/* Audio-task-owned PRNG: TPDF dither at the Float -> PCM16 boundary. */
+static uint32_t s_dsp_dither_rng = 0xA341316CU;
+
+static inline float dsp_tpdf_dither_lsb(void)
+{
+    s_dsp_dither_rng = s_dsp_dither_rng * 1664525U + 1013904223U;
+    const float a = (float)(s_dsp_dither_rng >> 8) * (1.0f / 16777216.0f);
+    s_dsp_dither_rng = s_dsp_dither_rng * 1664525U + 1013904223U;
+    const float b = (float)(s_dsp_dither_rng >> 8) * (1.0f / 16777216.0f);
+    return a - b;
+}
+
 static inline int16_t float_to_pcm16_rounded(float sample)
 {
     if (!isfinite(sample))
         return 0;
 
+    /* One TPDF-LSB peak dither before this PCM16 quantization boundary. */
     const float scaled = clampf_local(
-        sample * 32768.0f, -32768.0f, 32767.0f);
+        sample * 32768.0f + dsp_tpdf_dither_lsb(),
+        -32768.0f, 32767.0f);
     const int32_t rounded = (int32_t)(
         scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
     return (int16_t)rounded;
@@ -2599,17 +2612,17 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
             left *= master_linear;
             right *= master_linear;
 
+            /* Stereo-linked soft-knee limiter: one gain preserves L/R balance. */
             const float knee = 0.94f;
             const float range = 0.045f;
-            float a = fabsf(left);
-            if (a > knee) {
-                const float over = a - knee;
-                left = copysignf(knee + over / (1.0f + over / range), left);
-            }
-            a = fabsf(right);
-            if (a > knee) {
-                const float over = a - knee;
-                right = copysignf(knee + over / (1.0f + over / range), right);
+            const float peak = fmaxf(fabsf(left), fabsf(right));
+            if (peak > knee) {
+                const float over = peak - knee;
+                const float limited_peak =
+                    knee + over / (1.0f + over / range);
+                const float linked_gain = limited_peak / peak;
+                left *= linked_gain;
+                right *= linked_gain;
             }
 
             left = clampf_local(left, -0.985f, 0.985f);
@@ -3246,23 +3259,17 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
          * Soft-knee peak control. Linear below 0.94, asymptotically
          * approaches 0.985 above it; avoids the old hard-clipping edge.
          */
+        /* Stereo-linked soft-knee limiter: one gain preserves L/R balance. */
         const float limiter_knee = 0.94f;
         const float limiter_range = 0.045f;
-
-        float abs_l = fabsf(yl);
-        if (abs_l > limiter_knee) {
-            float over = abs_l - limiter_knee;
-            float limited = limiter_knee +
-                over / (1.0f + over / limiter_range);
-            yl = copysignf(limited, yl);
-        }
-
-        float abs_r = fabsf(yr);
-        if (abs_r > limiter_knee) {
-            float over = abs_r - limiter_knee;
-            float limited = limiter_knee +
-                over / (1.0f + over / limiter_range);
-            yr = copysignf(limited, yr);
+        const float stereo_peak = fmaxf(fabsf(yl), fabsf(yr));
+        if (stereo_peak > limiter_knee) {
+            const float over = stereo_peak - limiter_knee;
+            const float limited_peak =
+                limiter_knee + over / (1.0f + over / limiter_range);
+            const float linked_gain = limited_peak / stereo_peak;
+            yl *= linked_gain;
+            yr *= linked_gain;
         }
 
         yl = clampf_local(yl, -0.985f, 0.985f);
