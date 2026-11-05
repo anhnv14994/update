@@ -14,8 +14,22 @@ void stereo_spatial_get_config(const stereo_spatial_ctx_t *ctx, stereo_spatial_c
 static const char *TAG = "dsp_api";
 
 #define DSP_OPTIONS_MAGIC   0x4453504FU /* "DSPO" */
-#define DSP_OPTIONS_VERSION 1U
+#define DSP_OPTIONS_VERSION 2U
 #define DSP_OPTIONS_NS      "dsp_opts"
+
+/* Exact V1 layout kept for in-place migration of existing NVS records. */
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint8_t hf_a_enabled;
+    uint8_t hf_b_enabled;
+    uint8_t hf_a_strength_pct;
+    uint8_t hf_b_strength_pct;
+    uint8_t dynamic_loudness_enabled;
+    uint8_t spatial_mode;
+    uint8_t enable_width_eq;
+    uint8_t enable_decorrelator;
+} dsp_preset_options_v1_blob_t;
 
 typedef struct {
     uint32_t magic;
@@ -28,12 +42,35 @@ typedef struct {
     uint8_t spatial_mode;
     uint8_t enable_width_eq;
     uint8_t enable_decorrelator;
+    uint8_t character_stage_mask;
+    uint8_t character_feature_mask;
+    dsp_character_t character;
 } dsp_preset_options_blob_t;
+
+/* V1 used one shared Character record. Retain it as a one-time migration base. */
+static dsp_character_t s_legacy_character;
+static bool s_legacy_character_valid;
+
+static esp_err_t save_preset_options(dsp_preset_id_t id);
+
+static void apply_legacy_character(void)
+{
+    dsp_character_t factory = { .mode = DSP_CHARACTER_CUSTOM };
+    const dsp_character_t *source =
+        s_legacy_character_valid ? &s_legacy_character : &factory;
+
+    if (dsp_engine_set_character(source) != ESP_OK)
+        ESP_LOGW(TAG, "Could not apply legacy/factory Character fallback");
+}
 
 static void apply_default_preset_options(void)
 {
+    apply_legacy_character();
     (void)dsp_engine_set_character_hf(false, false, 0U, 0U);
     (void)dsp_engine_set_dynamic_loudness(false);
+    (void)dsp_engine_set_character_diagnostics(
+        DSP_CHARACTER_STAGE_MASK_ALL, DSP_CHARACTER_FEATURE_MASK_ALL);
+
     if (g_stereo_ctx) {
         const stereo_spatial_config_t cfg = {
             .mode = STEREO_SPATIAL_MODE_OFF,
@@ -42,6 +79,65 @@ static void apply_default_preset_options(void)
         };
         stereo_spatial_set_config(g_stereo_ctx, &cfg);
     }
+}
+
+static bool preset_options_v1_valid(const dsp_preset_options_v1_blob_t *blob)
+{
+    return blob &&
+        blob->magic == DSP_OPTIONS_MAGIC &&
+        blob->version == 1U &&
+        blob->hf_a_enabled <= 1U &&
+        blob->hf_b_enabled <= 1U &&
+        blob->dynamic_loudness_enabled <= 1U &&
+        blob->spatial_mode <= STEREO_SPATIAL_MODE_WIDE &&
+        blob->enable_width_eq <= 1U &&
+        blob->enable_decorrelator <= 1U &&
+        blob->hf_a_strength_pct <= 100U &&
+        blob->hf_b_strength_pct <= 100U;
+}
+
+static esp_err_t apply_legacy_preset_options(
+    dsp_preset_id_t id,
+    const dsp_preset_options_v1_blob_t *old)
+{
+    if (!preset_options_v1_valid(old)) {
+        ESP_LOGW(TAG, "Preset %d legacy options invalid; using defaults", (int)id);
+        apply_default_preset_options();
+        return ESP_OK;
+    }
+
+    apply_legacy_character();
+
+    esp_err_t err = dsp_engine_set_character_hf(
+        old->hf_a_enabled != 0U, old->hf_b_enabled != 0U,
+        old->hf_a_strength_pct, old->hf_b_strength_pct);
+    if (err != ESP_OK)
+        return err;
+
+    err = dsp_engine_set_dynamic_loudness(
+        old->dynamic_loudness_enabled != 0U);
+    if (err != ESP_OK)
+        return err;
+
+    (void)dsp_engine_set_character_diagnostics(
+        DSP_CHARACTER_STAGE_MASK_ALL, DSP_CHARACTER_FEATURE_MASK_ALL);
+
+    if (g_stereo_ctx) {
+        const stereo_spatial_config_t cfg = {
+            .mode = (stereo_spatial_mode_t)old->spatial_mode,
+            .enable_width_eq = old->enable_width_eq != 0U,
+            .enable_decorrelator = old->enable_decorrelator != 0U
+        };
+        stereo_spatial_set_config(g_stereo_ctx, &cfg);
+    }
+
+    ESP_LOGI(TAG, "Preset %d V1 options migrated to complete per-preset settings",
+             (int)id);
+    err = save_preset_options(id);
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "Preset %d V1 migration save failed: %s",
+                 (int)id, esp_err_to_name(err));
+    return ESP_OK;
 }
 
 static esp_err_t apply_preset_options(dsp_preset_id_t id)
@@ -61,23 +157,64 @@ static esp_err_t apply_preset_options(dsp_preset_id_t id)
 
     char key[8];
     snprintf(key, sizeof(key), "o%d", (int)id);
-    dsp_preset_options_blob_t blob;
-    size_t len = sizeof(blob);
-    err = nvs_get_blob(nvs, key, &blob, &len);
-    nvs_close(nvs);
 
+    size_t len = 0U;
+    err = nvs_get_blob(nvs, key, NULL, &len);
     if (err == ESP_ERR_NVS_NOT_FOUND) {
+        nvs_close(nvs);
         apply_default_preset_options();
         return ESP_OK;
     }
-    if (err != ESP_OK)
+    if (err != ESP_OK) {
+        nvs_close(nvs);
         return err;
+    }
 
-    if (len != sizeof(blob) || blob.magic != DSP_OPTIONS_MAGIC ||
+    if (len == sizeof(dsp_preset_options_v1_blob_t)) {
+        dsp_preset_options_v1_blob_t old;
+        size_t read_len = sizeof(old);
+        err = nvs_get_blob(nvs, key, &old, &read_len);
+        nvs_close(nvs);
+        if (err != ESP_OK || read_len != sizeof(old)) {
+            apply_default_preset_options();
+            return ESP_OK;
+        }
+        return apply_legacy_preset_options(id, &old);
+    }
+
+    if (len != sizeof(dsp_preset_options_blob_t)) {
+        nvs_close(nvs);
+        ESP_LOGW(TAG, "Preset %d options size unsupported; using defaults", (int)id);
+        apply_default_preset_options();
+        return ESP_OK;
+    }
+
+    dsp_preset_options_blob_t blob;
+    size_t read_len = sizeof(blob);
+    err = nvs_get_blob(nvs, key, &blob, &read_len);
+    nvs_close(nvs);
+    if (err != ESP_OK || read_len != sizeof(blob)) {
+        apply_default_preset_options();
+        return ESP_OK;
+    }
+
+    if (blob.magic != DSP_OPTIONS_MAGIC ||
         blob.version != DSP_OPTIONS_VERSION ||
+        blob.hf_a_enabled > 1U || blob.hf_b_enabled > 1U ||
         blob.hf_a_strength_pct > 100U || blob.hf_b_strength_pct > 100U ||
-        blob.spatial_mode > STEREO_SPATIAL_MODE_WIDE) {
+        blob.dynamic_loudness_enabled > 1U ||
+        blob.spatial_mode > STEREO_SPATIAL_MODE_WIDE ||
+        blob.enable_width_eq > 1U || blob.enable_decorrelator > 1U ||
+        (blob.character_stage_mask & (uint8_t)~DSP_CHARACTER_STAGE_MASK_ALL) != 0U ||
+        (blob.character_feature_mask & (uint8_t)~DSP_CHARACTER_FEATURE_MASK_ALL) != 0U) {
         ESP_LOGW(TAG, "Preset %d options invalid; using defaults", (int)id);
+        apply_default_preset_options();
+        return ESP_OK;
+    }
+
+    err = dsp_engine_set_character(&blob.character);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Preset %d Character data invalid; using defaults", (int)id);
         apply_default_preset_options();
         return ESP_OK;
     }
@@ -93,6 +230,11 @@ static esp_err_t apply_preset_options(dsp_preset_id_t id)
     if (err != ESP_OK)
         return err;
 
+    err = dsp_engine_set_character_diagnostics(
+        blob.character_stage_mask, blob.character_feature_mask);
+    if (err != ESP_OK)
+        return err;
+
     if (g_stereo_ctx) {
         const stereo_spatial_config_t cfg = {
             .mode = (stereo_spatial_mode_t)blob.spatial_mode,
@@ -102,9 +244,12 @@ static esp_err_t apply_preset_options(dsp_preset_id_t id)
         stereo_spatial_set_config(g_stereo_ctx, &cfg);
     }
 
-    ESP_LOGI(TAG, "Preset %d options loaded: HF=%u/%u Loudness=%u Spatial=%u",
-             (int)id, blob.hf_a_enabled, blob.hf_b_enabled,
-             blob.dynamic_loudness_enabled, blob.spatial_mode);
+    ESP_LOGI(TAG,
+             "Preset %d loaded: Character=%u HF=%u/%u Loudness=%u Spatial=%u A/B=%u/%u",
+             (int)id, blob.character.enabled ? 1U : 0U,
+             blob.hf_a_enabled, blob.hf_b_enabled,
+             blob.dynamic_loudness_enabled, blob.spatial_mode,
+             blob.character_stage_mask, blob.character_feature_mask);
     return ESP_OK;
 }
 
@@ -113,14 +258,18 @@ static esp_err_t save_preset_options(dsp_preset_id_t id)
     if (id < 0 || id >= DSP_NUM_PRESETS)
         return ESP_ERR_INVALID_ARG;
 
-    dsp_preset_options_blob_t blob = {
-        .magic = DSP_OPTIONS_MAGIC,
-        .version = DSP_OPTIONS_VERSION
-    };
+    dsp_preset_options_blob_t blob;
+    memset(&blob, 0, sizeof(blob));
+    blob.magic = DSP_OPTIONS_MAGIC;
+    blob.version = DSP_OPTIONS_VERSION;
+
+    esp_err_t err = dsp_engine_get_character(&blob.character);
+    if (err != ESP_OK)
+        return err;
 
     bool hf_a = false, hf_b = false;
     uint8_t hf_a_strength = 0U, hf_b_strength = 0U;
-    esp_err_t err = dsp_engine_get_character_hf(
+    err = dsp_engine_get_character_hf(
         &hf_a, &hf_b, &hf_a_strength, &hf_b_strength);
     if (err != ESP_OK)
         return err;
@@ -131,6 +280,11 @@ static esp_err_t save_preset_options(dsp_preset_id_t id)
     blob.hf_b_strength_pct = hf_b_strength;
     blob.dynamic_loudness_enabled =
         dsp_engine_get_dynamic_loudness() ? 1U : 0U;
+
+    err = dsp_engine_get_character_diagnostic_masks(
+        &blob.character_stage_mask, &blob.character_feature_mask);
+    if (err != ESP_OK)
+        return err;
 
     if (g_stereo_ctx) {
         stereo_spatial_config_t cfg;
@@ -153,9 +307,12 @@ static esp_err_t save_preset_options(dsp_preset_id_t id)
     nvs_close(nvs);
 
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Preset %d options saved: HF=%u/%u Loudness=%u Spatial=%u",
-                 (int)id, blob.hf_a_enabled, blob.hf_b_enabled,
-                 blob.dynamic_loudness_enabled, blob.spatial_mode);
+        ESP_LOGI(TAG,
+                 "Preset %d saved: Character=%u HF=%u/%u Loudness=%u Spatial=%u A/B=%u/%u",
+                 (int)id, blob.character.enabled ? 1U : 0U,
+                 blob.hf_a_enabled, blob.hf_b_enabled,
+                 blob.dynamic_loudness_enabled, blob.spatial_mode,
+                 blob.character_stage_mask, blob.character_feature_mask);
     }
     return err;
 }
@@ -165,29 +322,30 @@ static esp_err_t reset_preset_options(dsp_preset_id_t id)
     if (id < 0 || id >= DSP_NUM_PRESETS)
         return ESP_ERR_INVALID_ARG;
 
+    dsp_preset_options_blob_t blob;
+    memset(&blob, 0, sizeof(blob));
+    blob.magic = DSP_OPTIONS_MAGIC;
+    blob.version = DSP_OPTIONS_VERSION;
+    blob.character.mode = DSP_CHARACTER_CUSTOM;
+    blob.character_stage_mask = DSP_CHARACTER_STAGE_MASK_ALL;
+    blob.character_feature_mask = DSP_CHARACTER_FEATURE_MASK_ALL;
+
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(DSP_OPTIONS_NS, NVS_READWRITE, &nvs);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        apply_default_preset_options();
-        return ESP_OK;
-    }
     if (err != ESP_OK)
         return err;
 
     char key[8];
     snprintf(key, sizeof(key), "o%d", (int)id);
-    err = nvs_erase_key(nvs, key);
-    if (err == ESP_ERR_NVS_NOT_FOUND)
-        err = ESP_OK;
+    err = nvs_set_blob(nvs, key, &blob, sizeof(blob));
     if (err == ESP_OK)
         err = nvs_commit(nvs);
     nvs_close(nvs);
 
-    if (err == ESP_OK)
-        apply_default_preset_options();
+    if (err == ESP_OK && id == dsp_engine_get_active_preset())
+        err = apply_preset_options(id);
     return err;
 }
-
 
 extern const char web_dsp_html_start[] asm("_binary_web_dsp_html_start");
 extern const char web_dsp_html_end[]   asm("_binary_web_dsp_html_end");
@@ -782,7 +940,7 @@ static esp_err_t api_character_diag_handler(httpd_req_t *req)
 
 
 /* ============================================================
- * Dynamic Loudness handler (session only)
+ * Dynamic Loudness handler (saved with the active preset on Save)
  * ============================================================ */
 
 static esp_err_t api_loudness_handler(httpd_req_t *req)
@@ -1325,11 +1483,8 @@ static esp_err_t api_master_handler(
 // ---------------------------------------------------------------------------
 // SAVE
 //
-// Save cả:
-//   1. PEQ preset
-//   2. Analog Character V5 Lite
-//
-// Vì vậy nút Save trên /dsp sẽ lưu toàn bộ cấu hình.
+// Save PEQ, Analog Character, HF A/B, Dynamic Loudness, Stereo Spatial
+// and the A/B processing masks as one complete preset snapshot.
 // ---------------------------------------------------------------------------
 
 static esp_err_t api_save_handler(
@@ -1369,10 +1524,6 @@ static esp_err_t api_save_handler(
             "nvs preset write failed"
         );
 
-
-    err = dsp_engine_save_character();
-    if (err != ESP_OK)
-        return send_error_json(req, 500, "nvs character write failed");
 
     err = save_preset_options(target);
     if (err != ESP_OK)
@@ -1435,6 +1586,10 @@ esp_err_t dsp_api_register(
 {
     if (!server)
         return ESP_ERR_INVALID_ARG;
+
+    /* Capture the old shared Character once for V1/missing-preset migration. */
+    s_legacy_character_valid =
+        (dsp_engine_get_character(&s_legacy_character) == ESP_OK);
 
     /* NVS + Stereo Spatial are initialized before the DSP routes register. */
     esp_err_t options_err = apply_preset_options(dsp_engine_get_active_preset());
