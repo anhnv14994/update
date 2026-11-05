@@ -2517,7 +2517,7 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
     character_enabled = cached.character_enabled;
     character_filters = cached.character_filters;
 
-    /* Session-only HF controls are atomic; read once per PCM block. */
+    /* HF controls are atomically snapshotted once per PCM block. */
     const bool character_hf_a_requested = atomic_load_explicit(
         &s_character_hf_a_enabled, memory_order_acquire);
     const bool character_hf_b_requested = atomic_load_explicit(
