@@ -879,11 +879,11 @@ static void rebuild_character_filters(void)
     character_filter_coef_t next;
     memset(&next, 0, sizeof(next));
 
-    /* V6.7: narrower harmonic source bands reduce broad-band IM spill.
-     * Stage 1 body: 80–320 Hz; Stage 2 vocal core: 250–1400 Hz.
+    /* V6.7: controlled harmonic source-band overlap balances body and vocal core.
+     * Stage 1 body: 80–450 Hz; Stage 2 vocal core: 250–1400 Hz.
      * Each path remains HPF2 + LPF2; no additional biquad cascade is added. */
     static const float source_hp[CHARACTER_STAGE_COUNT] = { 80.0f, 250.0f };
-    static const float source_lp[CHARACTER_STAGE_COUNT] = { 320.0f, 1400.0f };
+    static const float source_lp[CHARACTER_STAGE_COUNT] = { 450.0f, 1400.0f };
     static const float mean_square_ms[CHARACTER_STAGE_COUNT] = { 20.0f, 18.0f };
 
     for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
