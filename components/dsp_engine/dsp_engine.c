@@ -203,9 +203,14 @@ typedef struct {
     character_stage_filter_t stage[CHARACTER_STAGE_COUNT];
     /* The identical residual HPF is shared after summing both stage outputs. */
     biquad_coef_t residual_hpf;
-    /* Shared first-order split points for the optional 2–5 kHz / 5–10 kHz paths. */
-    float hf_lp_alpha[3]; /* 2 kHz, 5 kHz, 10 kHz */
-    float hf_mix_alpha;   /* 8 ms click-safe enable/disable ramp */
+    /* Dedicated band-pass paths for transient-only HF refinement. */
+    biquad_coef_t hf_band_a; /* 2–5 kHz, centered at 3.16 kHz */
+    biquad_coef_t hf_band_b; /* 5–10 kHz, centered at 7.07 kHz */
+    float hf_fast_attack_alpha;
+    float hf_fast_release_alpha;
+    float hf_slow_attack_alpha;
+    float hf_slow_release_alpha;
+    float hf_mix_alpha;
 } character_filter_coef_t;
 
 typedef struct {
@@ -245,16 +250,21 @@ static biquad_state_t s_character_residual_hpf[2];
 
 /* Audio-task-owned state; no allocation, locks, or NVS writes in the PCM path. */
 typedef struct {
-    float lp_2k[2];
-    float lp_5k[2];
-    float lp_10k[2];
-    float prev_band_b[2];
+    biquad_state_t band_a[2];
+    biquad_state_t band_b[2];
+    float fast_env_a[2];
+    float slow_env_a[2];
+    float fast_env_b[2];
+    float slow_env_b[2];
     float mix_a;
     float mix_b;
+    bool history_active;
 } character_hf_state_t;
 static character_hf_state_t s_character_hf_state;
 static _Atomic bool s_character_hf_a_enabled = false;
 static _Atomic bool s_character_hf_b_enabled = false;
+static _Atomic uint32_t s_character_hf_a_strength_pct = 0;
+static _Atomic uint32_t s_character_hf_b_strength_pct = 0;
 
 /* Runtime-only diagnostic switches; deliberately excluded from NVS. */
 static _Atomic uint32_t s_character_diag_stage_mask = DSP_CHARACTER_STAGE_MASK_ALL;
@@ -797,6 +807,25 @@ static inline float character_adaa_poly_residual(
     return residual;
 }
 
+static void calc_bandpass(float fs, float center_hz, float q, biquad_coef_t *out)
+{
+    const float w0 = 2.0f * (float)M_PI * center_hz / fs;
+    const float cw = cosf(w0);
+    const float alpha = sinf(w0) / (2.0f * q);
+    const float a0 = 1.0f + alpha;
+
+    out->b0 = alpha / a0;
+    out->b1 = 0.0f;
+    out->b2 = -alpha / a0;
+    out->a1 = -2.0f * cw / a0;
+    out->a2 = (1.0f - alpha) / a0;
+}
+
+static float envelope_alpha(float time_ms)
+{
+    return 1.0f - expf(-1.0f / (time_ms * 0.001f * DSP_SAMPLE_RATE_HZ));
+}
+
 static void rebuild_character_filters(void)
 {
     character_filter_coef_t next;
@@ -819,12 +848,13 @@ static void rebuild_character_filters(void)
     calc_butterworth_hpf_q(DSP_SAMPLE_RATE_HZ, 15.0f,
                            0.70710678118f, &next.residual_hpf);
 
-    /* Shared low-cost crossover bank: A = LP(5k)-LP(2k), B = LP(10k)-LP(5k). */
-    static const float hf_split_hz[3] = { 2000.0f, 5000.0f, 10000.0f };
-    for (unsigned i = 0; i < 3; ++i) {
-        next.hf_lp_alpha[i] = 1.0f - expf(
-            -2.0f * (float)M_PI * hf_split_hz[i] / DSP_SAMPLE_RATE_HZ);
-    }
+    /* Transient-only refinement: no static treble shelf and no harmonic generator. */
+    calc_bandpass(DSP_SAMPLE_RATE_HZ, 3162.2777f, 1.054f, &next.hf_band_a);
+    calc_bandpass(DSP_SAMPLE_RATE_HZ, 7071.0678f, 1.414f, &next.hf_band_b);
+    next.hf_fast_attack_alpha = envelope_alpha(1.5f);
+    next.hf_fast_release_alpha = envelope_alpha(25.0f);
+    next.hf_slow_attack_alpha = envelope_alpha(30.0f);
+    next.hf_slow_release_alpha = envelope_alpha(120.0f);
     next.hf_mix_alpha = 1.0f - expf(
         -1.0f / (0.008f * DSP_SAMPLE_RATE_HZ));
 
@@ -2195,30 +2225,43 @@ esp_err_t dsp_engine_save_character(void)
  * Optional HF refinement controls (runtime only; never persisted)
  * ============================================================ */
 
-esp_err_t dsp_engine_set_character_hf(bool a_enabled, bool b_enabled)
+esp_err_t dsp_engine_set_character_hf(
+    bool a_enabled, bool b_enabled, uint8_t a_strength_pct, uint8_t b_strength_pct)
 {
+    if (a_strength_pct > 100U || b_strength_pct > 100U)
+        return ESP_ERR_INVALID_ARG;
+
     const bool old_a = atomic_exchange_explicit(
         &s_character_hf_a_enabled, a_enabled, memory_order_acq_rel);
     const bool old_b = atomic_exchange_explicit(
         &s_character_hf_b_enabled, b_enabled, memory_order_acq_rel);
+    const uint32_t old_a_strength = atomic_exchange_explicit(
+        &s_character_hf_a_strength_pct, a_strength_pct, memory_order_acq_rel);
+    const uint32_t old_b_strength = atomic_exchange_explicit(
+        &s_character_hf_b_strength_pct, b_strength_pct, memory_order_acq_rel);
 
-    if (old_a != a_enabled) {
-        ESP_LOGI(TAG, "Character HF A (2-5 kHz Presence): %s",
-                 a_enabled ? "ON" : "OFF");
+    if (old_a != a_enabled || old_a_strength != a_strength_pct) {
+        ESP_LOGI(TAG, "Character HF A: %s strength=%u%% (max transient lift 0.8 dB)",
+                 a_enabled ? "ON" : "OFF", (unsigned)a_strength_pct);
     }
-    if (old_b != b_enabled) {
-        ESP_LOGI(TAG, "Character HF B (5-10 kHz Transient): %s",
-                 b_enabled ? "ON" : "OFF");
+    if (old_b != b_enabled || old_b_strength != b_strength_pct) {
+        ESP_LOGI(TAG, "Character HF B: %s strength=%u%% (max transient lift 0.5 dB)",
+                 b_enabled ? "ON" : "OFF", (unsigned)b_strength_pct);
     }
     return ESP_OK;
 }
 
-esp_err_t dsp_engine_get_character_hf(bool *a_enabled, bool *b_enabled)
+esp_err_t dsp_engine_get_character_hf(
+    bool *a_enabled, bool *b_enabled, uint8_t *a_strength_pct, uint8_t *b_strength_pct)
 {
-    if (!a_enabled || !b_enabled)
+    if (!a_enabled || !b_enabled || !a_strength_pct || !b_strength_pct)
         return ESP_ERR_INVALID_ARG;
     *a_enabled = atomic_load_explicit(&s_character_hf_a_enabled, memory_order_acquire);
     *b_enabled = atomic_load_explicit(&s_character_hf_b_enabled, memory_order_acquire);
+    *a_strength_pct = (uint8_t)atomic_load_explicit(
+        &s_character_hf_a_strength_pct, memory_order_acquire);
+    *b_strength_pct = (uint8_t)atomic_load_explicit(
+        &s_character_hf_b_strength_pct, memory_order_acquire);
     return ESP_OK;
 }
 
@@ -2360,11 +2403,15 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
     character_enabled = cached.character_enabled;
     character_filters = cached.character_filters;
 
-    /* Session-only HF switches are atomic; read once per block. */
+    /* Session-only HF controls are atomic; read once per PCM block. */
     const bool character_hf_a_requested = atomic_load_explicit(
         &s_character_hf_a_enabled, memory_order_acquire);
     const bool character_hf_b_requested = atomic_load_explicit(
         &s_character_hf_b_enabled, memory_order_acquire);
+    const float character_hf_a_strength = (float)atomic_load_explicit(
+        &s_character_hf_a_strength_pct, memory_order_acquire) * 0.01f;
+    const float character_hf_b_strength = (float)atomic_load_explicit(
+        &s_character_hf_b_strength_pct, memory_order_acquire) * 0.01f;
 
 
     /*
@@ -2839,47 +2886,69 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
 
         /*
          * ----------------------------------------------------
-         * Analog Character HF refinement — optional A/B paths
+         * Analog Character HF refinement — transient-only A/B
          * ----------------------------------------------------
-         * One shared 3-point first-order crossover bank per channel:
-         * A = LP(5 kHz) - LP(2 kHz): subtle cubic presence/detail.
-         * B = LP(10 kHz) - LP(5 kHz): restrained transient lift.
-         * No extra biquad cascade, ADAA, envelope detector, or allocation.
-         * Both paths are session-only and independently switchable.
+         * A: 2–5 kHz articulation, maximum +0.8 dB on detected attacks.
+         * B: 5–10 kHz micro-transients, maximum +0.5 dB on detected attacks.
+         * Fast/slow magnitude envelopes suppress steady-state hiss; no
+         * cubic harmonics, static EQ lift, allocation, or audio-task locks.
          */
         {
             character_hf_state_t *hf = &s_character_hf_state;
-            const float target_a = character_hf_a_requested ? 1.0f : 0.0f;
-            const float target_b = character_hf_b_requested ? 1.0f : 0.0f;
+            const float target_a = character_hf_a_requested ? character_hf_a_strength : 0.0f;
+            const float target_b = character_hf_b_requested ? character_hf_b_strength : 0.0f;
             hf->mix_a += character_filters.hf_mix_alpha * (target_a - hf->mix_a);
             hf->mix_b += character_filters.hf_mix_alpha * (target_b - hf->mix_b);
 
-            if (hf->mix_a > 0.000001f || hf->mix_b > 0.000001f ||
-                character_hf_a_requested || character_hf_b_requested) {
+            const bool hf_active = character_hf_a_requested || character_hf_b_requested ||
+                hf->mix_a > 0.00001f || hf->mix_b > 0.00001f;
+
+            if (hf_active) {
+                hf->history_active = true;
                 for (unsigned ch = 0; ch < 2; ++ch) {
                     const float x = (ch == 0) ? yl : yr;
-                    hf->lp_2k[ch] += character_filters.hf_lp_alpha[0] *
-                        (x - hf->lp_2k[ch]);
-                    hf->lp_5k[ch] += character_filters.hf_lp_alpha[1] *
-                        (x - hf->lp_5k[ch]);
-                    hf->lp_10k[ch] += character_filters.hf_lp_alpha[2] *
-                        (x - hf->lp_10k[ch]);
+                    const float band_a = biquad_process_sample(
+                        x, &character_filters.hf_band_a, &hf->band_a[ch]);
+                    const float band_b = biquad_process_sample(
+                        x, &character_filters.hf_band_b, &hf->band_b[ch]);
 
-                    const float band_a = hf->lp_5k[ch] - hf->lp_2k[ch];
-                    const float band_b = hf->lp_10k[ch] - hf->lp_5k[ch];
-                    const float cubic_a = band_a * band_a * band_a;
-                    const float transient_b = band_b - hf->prev_band_b[ch];
-                    hf->prev_band_b[ch] = band_b;
+                    const float abs_a = fabsf(band_a);
+                    const float abs_b = fabsf(band_b);
+
+                    float alpha = (abs_a > hf->fast_env_a[ch])
+                        ? character_filters.hf_fast_attack_alpha
+                        : character_filters.hf_fast_release_alpha;
+                    hf->fast_env_a[ch] += alpha * (abs_a - hf->fast_env_a[ch]);
+                    alpha = (abs_a > hf->slow_env_a[ch])
+                        ? character_filters.hf_slow_attack_alpha
+                        : character_filters.hf_slow_release_alpha;
+                    hf->slow_env_a[ch] += alpha * (abs_a - hf->slow_env_a[ch]);
+
+                    alpha = (abs_b > hf->fast_env_b[ch])
+                        ? character_filters.hf_fast_attack_alpha
+                        : character_filters.hf_fast_release_alpha;
+                    hf->fast_env_b[ch] += alpha * (abs_b - hf->fast_env_b[ch]);
+                    alpha = (abs_b > hf->slow_env_b[ch])
+                        ? character_filters.hf_slow_attack_alpha
+                        : character_filters.hf_slow_release_alpha;
+                    hf->slow_env_b[ch] += alpha * (abs_b - hf->slow_env_b[ch]);
+
+                    const float transient_a = clampf_local(
+                        (hf->fast_env_a[ch] - 1.25f * hf->slow_env_a[ch] - 0.0006f) /
+                        (hf->fast_env_a[ch] + 0.0012f), 0.0f, 1.0f);
+                    const float transient_b = clampf_local(
+                        (hf->fast_env_b[ch] - 1.30f * hf->slow_env_b[ch] - 0.0009f) /
+                        (hf->fast_env_b[ch] + 0.0015f), 0.0f, 1.0f);
 
                     float y = x;
-                    if (hf->mix_a > 0.000001f)
-                        y += hf->mix_a * 0.55f * cubic_a;
-                    if (hf->mix_b > 0.000001f)
-                        y += hf->mix_b * 0.035f * transient_b;
+                    y += band_a * transient_a * hf->mix_a * 0.09648f;
+                    y += band_b * transient_b * hf->mix_b * 0.05925f;
 
                     if (ch == 0) yl = y;
                     else yr = y;
                 }
+            } else if (hf->history_active) {
+                memset(hf, 0, sizeof(*hf));
             }
         }
 
