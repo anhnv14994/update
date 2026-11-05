@@ -6,6 +6,7 @@ idf_component_register(
         nvs_flash
         esp_wifi
         esp_netif
+        esp_timer
         esp_http_server
         driver
         wifi_provisioning
