@@ -188,6 +188,11 @@ static cJSON *build_state_json(void)
         44100
     );
 
+    cJSON_AddNumberToObject(root, "airplay_volume",
+                            dsp_engine_get_output_volume());
+    cJSON_AddBoolToObject(root, "dynamic_loudness_enabled",
+                          dsp_engine_get_dynamic_loudness());
+
 
     // ---------------------------------------------------------
     // Stereo Spatial
@@ -596,6 +601,32 @@ static esp_err_t api_character_diag_handler(httpd_req_t *req)
         return send_error_json(req, 400, "invalid Character diagnostic masks");
 
     return send_character_diag_state(req);
+}
+
+
+/* ============================================================
+ * Dynamic Loudness handler (session only)
+ * ============================================================ */
+
+static esp_err_t api_loudness_handler(httpd_req_t *req)
+{
+    char buf[128];
+    cJSON *body = parse_request_json(req, buf, sizeof(buf));
+    if (!body)
+        return send_error_json(req, 400, "invalid or empty json");
+
+    cJSON *enabled = cJSON_GetObjectItem(body, "enabled");
+    if (!cJSON_IsBool(enabled)) {
+        cJSON_Delete(body);
+        return send_error_json(req, 400, "expected boolean 'enabled'");
+    }
+
+    const bool value = cJSON_IsTrue(enabled);
+    cJSON_Delete(body);
+    if (dsp_engine_set_dynamic_loudness(value) != ESP_OK)
+        return send_error_json(req, 500, "cannot update Dynamic Loudness");
+
+    return send_state(req);
 }
 
 
@@ -1249,6 +1280,12 @@ esp_err_t dsp_api_register(
             .uri = "/api/dsp/character",
             .method = HTTP_POST,
             .handler = api_character_handler
+        },
+
+        {
+            .uri = "/api/dsp/loudness",
+            .method = HTTP_POST,
+            .handler = api_loudness_handler
         },
 
         {
