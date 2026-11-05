@@ -540,6 +540,7 @@ input[type=range]::-moz-range-thumb{
   <div class="section">
 
     <div class="presets" id="presets"></div>
+    <div class="exciter-note">Mỗi preset lưu riêng PEQ, master gain, Character ON/OFF và thông số harmonic, HF A/B, Dynamic Loudness, Stereo Spatial cùng các switch A/B. Chỉnh realtime để nghe thử, sau đó nhấn <strong>Save preset</strong>. Đổi preset sẽ nạp lại cấu hình đã lưu; Reset preset đưa preset đó về mặc định.</div>
 
   </div>
 
@@ -549,7 +550,7 @@ input[type=range]::-moz-range-thumb{
   <div class="section">
 
     <div class="row-label master-row">
-      <span>Master</span>
+      <span>Master gain · headroom</span>
       <b id="masterVal">-3.0 dB</b>
     </div>
 
@@ -560,6 +561,7 @@ input[type=range]::-moz-range-thumb{
       max="6"
       step="0.1"
       value="-3">
+    <div class="peq-subtitle">Tăng master sẽ nâng toàn bộ tín hiệu nhưng giảm headroom và dễ chạm giới hạn/clipping hơn. Giảm master giúp giữ khoảng dự trữ khi PEQ hoặc harmonic đang boost mạnh.</div>
 
   </div>
 
@@ -571,7 +573,7 @@ input[type=range]::-moz-range-thumb{
     <div class="peq-title">Analog Character <span style="font-size:12px;opacity:.65;">V5.1 Lite</span></div>
 
     <div class="peq-subtitle">
-      Preamp DSP V5.1 Lite giữ nguyên 2 tầng nonlinear. Mean-square detector cải thiện tracking tín hiệu nhiều thành phần; Harmonic Interaction và Dynamic Saturation là hai tùy chọn độc lập, mặc định tắt.
+      Hai tầng harmonic hoạt động trên 80–450 Hz và 250 Hz–1.4 kHz. Các thay đổi áp dụng realtime; nhấn <strong>Save preset</strong> để lưu toàn bộ cấu hình riêng cho preset đang chọn.
     </div>
 
     <div class="presets" id="characterProfiles">
@@ -599,22 +601,25 @@ input[type=range]::-moz-range-thumb{
     <div class="band">
       <div class="row-label"><span>Warmth — H2 / Vocal Body</span><b id="characterWarmthVal">0%</b></div>
       <input class="exciter-range" type="range" id="characterWarmth" min="0" max="100" step="1" value="0">
+      <div class="peq-subtitle">Tăng: H2 dày hơn, vocal và low-mid có thân/độ ấm hơn. Quá cao: tiếng dễ phình, đục và lấn vùng 250–450 Hz. Giảm: sạch, gọn hơn nhưng có thể mỏng.</div>
     </div>
 
     <div class="band">
       <div class="row-label"><span>Detail — H3 Texture</span><b id="characterDetailVal">0%</b></div>
       <input class="exciter-range" type="range" id="characterDetail" min="0" max="100" step="1" value="0">
+      <div class="peq-subtitle">Tăng: thêm H3, làm texture và cạnh của vocal/nhạc cụ rõ hơn. Quá cao: dễ cứng, sạn hoặc mệt tai. Giảm: âm mềm và hiền hơn nhưng có thể bớt nét.</div>
     </div>
 
     <div class="band">
       <div class="row-label"><span>Drive — Harmonic Density</span><b id="characterDriveVal">0%</b></div>
       <input class="exciter-range" type="range" id="characterDrive" min="0" max="100" step="1" value="0">
+      <div class="peq-subtitle">Tăng: tăng cường độ màu harmonic tổng thể của hai Stage. Quá cao: dễ dày đặc, nén cảm nhận và giảm tách lớp. Giảm: ít màu âm hơn; 0% gần như không thêm harmonic.</div>
     </div>
 
     <div class="feature">
       <div class="feature-text">
         <div class="feature-name">Harmonic Interaction</div>
-        <div class="feature-info">Năng lượng low-mid của Stage 1 điều tiết mật độ hài Stage 2, giúp kiểm soát low-mid buildup.</div>
+        <div class="feature-info">Stage 1 (body) tương tác với Stage 2 (vocal core), tạo chuyển tiếp harmonic liền mạch hơn.</div>
       </div>
       <label class="switch">
         <input type="checkbox" id="characterInteractionEnabled">
@@ -624,12 +629,13 @@ input[type=range]::-moz-range-thumb{
     <div class="band">
       <div class="row-label"><span>Interaction amount</span><b id="characterInteractionVal">0%</b></div>
       <input class="exciter-range" type="range" id="characterInteraction" min="0" max="100" step="1" value="0">
+      <div class="peq-subtitle">Tăng: liên kết độ dày low-mid với harmonic vùng vocal rõ hơn. Quá cao: low-mid có thể dồn và vocal kém thoáng. Chỉ có tác dụng khi Harmonic Interaction đang ON.</div>
     </div>
 
     <div class="feature">
       <div class="feature-text">
         <div class="feature-name">Dynamic Saturation</div>
-        <div class="feature-info">Tăng lượng hài theo năng lượng tín hiệu; không nén hoặc tự động giảm gain dry.</div>
+        <div class="feature-info">Lượng harmonic biến thiên theo năng lượng tín hiệu; không phải compressor.</div>
       </div>
       <label class="switch">
         <input type="checkbox" id="characterDynamicEnabled">
@@ -639,6 +645,7 @@ input[type=range]::-moz-range-thumb{
     <div class="band">
       <div class="row-label"><span>Dynamic amount</span><b id="characterDynamicVal">0%</b></div>
       <input class="exciter-range" type="range" id="characterDynamic" min="0" max="100" step="1" value="0">
+      <div class="peq-subtitle">Tăng: harmonic thay đổi rõ hơn theo cường độ từng đoạn nhạc, giúp tiếng có độ sống và mật độ. Quá cao: transient có thể gắt/dày và tăng IMD. Chỉ có tác dụng khi Dynamic Saturation đang ON.</div>
     </div>
 
 
@@ -653,30 +660,30 @@ input[type=range]::-moz-range-thumb{
     </div>
 
     <div class="character-diag">
-      <div class="character-diag-title">A/B Diagnostics · V5.1 Lite · Session only</div>
-      <div class="peq-subtitle">Các switch A/B phía dưới chỉ dùng đo kiểm realtime, không ghi vào NVS. V5.1 vẫn giữ đúng 2 Stage.</div>
+      <div class="character-diag-title">A/B Diagnostics · lưu theo preset</div>
+      <div class="peq-subtitle">Các switch này cho phép bypass từng Stage hoặc từng nhánh harmonic để nghe/đo A/B. ON = xử lý đầy đủ; OFF = bỏ nhánh tương ứng. Trạng thái được lưu cùng preset khi nhấn Save.</div>
 
       <div class="character-diag-title">Nonlinear stages</div>
       <div class="feature">
-        <div class="feature-text"><div class="feature-name">Stage 1 · Low-mid body</div><div class="feature-info">80–450 Hz · harmonic body</div></div>
+        <div class="feature-text"><div class="feature-name">Stage 1 · Low-mid body</div><div class="feature-info">80–450 Hz · OFF = bỏ harmonic body, bass gốc vẫn đi qua</div></div>
         <label class="switch"><input type="checkbox" id="charStage1" checked><span class="slider-toggle"></span></label>
       </div>
       <div class="feature">
-        <div class="feature-text"><div class="feature-name">Stage 2 · Vocal core</div><div class="feature-info">250 Hz–1.4 kHz · vocal core</div></div>
+        <div class="feature-text"><div class="feature-name">Stage 2 · Vocal core</div><div class="feature-info">250 Hz–1.4 kHz · OFF = giảm harmonic ở lõi vocal</div></div>
         <label class="switch"><input type="checkbox" id="charStage2" checked><span class="slider-toggle"></span></label>
       </div>
 
       <div class="character-diag-title">Parameter bypass</div>
       <div class="feature">
-        <div class="feature-text"><div class="feature-name">Warmth</div><div class="feature-info">H2 / vocal body</div></div>
+        <div class="feature-text"><div class="feature-name">Warmth</div><div class="feature-info">H2 / vocal body · OFF = bỏ nhánh H2</div></div>
         <label class="switch"><input type="checkbox" id="charFeatWarmth" checked><span class="slider-toggle"></span></label>
       </div>
       <div class="feature">
-        <div class="feature-text"><div class="feature-name">Detail</div><div class="feature-info">H3 / texture</div></div>
+        <div class="feature-text"><div class="feature-name">Detail</div><div class="feature-info">H3 / texture · OFF = bỏ nhánh H3</div></div>
         <label class="switch"><input type="checkbox" id="charFeatDetail" checked><span class="slider-toggle"></span></label>
       </div>
       <div class="feature">
-        <div class="feature-text"><div class="feature-name">Drive</div><div class="feature-info">Harmonic drive multiplier · OFF = unity</div></div>
+        <div class="feature-text"><div class="feature-name">Drive</div><div class="feature-info">Harmonic drive multiplier · OFF = không nhân Drive</div></div>
         <label class="switch"><input type="checkbox" id="charFeatDrive" checked><span class="slider-toggle"></span></label>
       </div>
 
@@ -688,7 +695,7 @@ input[type=range]::-moz-range-thumb{
       <div class="band">
         <div class="band-head"><span class="freq-role">HF A STRENGTH</span><span class="gain-val" id="characterHfAStrengthVal">0%</span></div>
         <input type="range" min="0" max="100" step="1" value="0" id="characterHfAStrength">
-        <div class="peq-subtitle">0–100% · transient lift tối đa +0.8 dB</div>
+        <div class="peq-subtitle">0–100% · tối đa +0.8 dB transient lift. Tăng để vocal/guitar/piano rõ cạnh hơn; quá cao có thể làm presence cứng.</div>
       </div>
       <div class="feature">
         <div class="feature-text"><div class="feature-name">HF B · Micro-transient / 5–10 kHz</div><div class="feature-info">Giữ attack cymbal/tiếng gõ; guard giảm nhẹ khi năng lượng 5–10 kHz áp đảo 2–5 kHz, không phải bộ nhận diện âm xì tuyệt đối.</div></div>
@@ -697,16 +704,16 @@ input[type=range]::-moz-range-thumb{
       <div class="band">
         <div class="band-head"><span class="freq-role">HF B STRENGTH</span><span class="gain-val" id="characterHfBStrengthVal">0%</span></div>
         <input type="range" min="0" max="100" step="1" value="0" id="characterHfBStrength">
-        <div class="peq-subtitle">0–100% · transient lift tối đa +0.5 dB</div>
+        <div class="peq-subtitle">0–100% · tối đa +0.5 dB transient lift. Tăng để cymbal/tiếng gõ rõ attack hơn; quá cao dễ làm treble sắc hoặc splashy.</div>
       </div>
-      <div class="peq-subtitle">A/B độc lập, mặc định OFF + 0%. Trạng thái và strength được lưu riêng theo từng preset. HF B có spectral guard nhẹ; Mix ramp 8 ms.</div>
+      <div class="peq-subtitle">A/B độc lập. Tăng strength làm hiệu ứng transient rõ hơn, không phải treble shelf liên tục. Bắt đầu thấp; HF B có spectral guard nhẹ. Mix ramp 8 ms.</div>
 
       <div class="character-diag-title">Dynamic Loudness · lưu theo preset</div>
       <div class="feature">
         <div class="feature-text"><div class="feature-name">Low-volume compensation</div><div class="feature-info">Bù nhẹ bass và air khi volume AirPlay thấp; OFF mặc định để giữ đáp tuyến phẳng.</div></div>
         <label class="switch"><input type="checkbox" id="dynamicLoudnessEnabled"><span class="slider-toggle"></span></label>
       </div>
-      <div class="peq-subtitle">Mốc tương đối −6 dB theo AirPlay volume × master preset (không phải hiệu chuẩn SPL). Tối đa +3 dB vùng thấp quanh 110 Hz và +1 dB dải cao trên 9 kHz; chuyển 50 ms. OFF mặc định; trạng thái ON/OFF được lưu riêng theo từng preset.</div>
+      <div class="peq-subtitle">Chỉ bù khi mức phát nhỏ hơn mốc tham chiếu khoảng −6 dB theo AirPlay volume × master preset (không phải hiệu chuẩn SPL). ON: tối đa +3 dB vùng thấp quanh 110 Hz và +1 dB trên 9 kHz; giúp nghe đầy hơn ở volume nhỏ. OFF: giữ đáp tuyến không bù. Lưu ON/OFF theo preset.</div>
 
       <div class="character-diag-title">Processing time · µs per 352-sample frame</div>
       <div class="peq-subtitle">Cycle-counter elapsed time; may include scheduler preemption, so compare relative stage cost.</div>
@@ -731,8 +738,7 @@ input[type=range]::-moz-range-thumb{
     </div>
 
     <div class="peq-subtitle">
-      10-band PEQ của preset đang chọn. Hover vào tần số để xem vai trò của từng vùng.
-      Factory preset được giữ nguyên; V6.7 không ghi đè EQ đã lưu trong NVS.
+      10-band PEQ của preset đang chọn. Gain dương = tăng, gain âm = giảm. Q thấp = vùng tác động rộng/mượt; Q cao = vùng hẹp/chính xác. Hover vào tần số để xem vai trò từng vùng. Nhấn Save preset để lưu.
     </div>
 
     <div id="bands"></div>
@@ -790,6 +796,7 @@ input[type=range]::-moz-range-thumb{
         max="12"
         step="0.1"
         value="0.3">
+      <div class="peq-subtitle">Tăng gain: thêm độ thoáng/sáng từ tần số High Shelf trở lên; quá cao có thể lộ hiss và làm tiếng khô. Giảm gain: dịu treble nhưng có thể tối tiếng. Đổi tần số để dịch vùng bắt đầu tác động.</div>
 
     </div>
 
@@ -814,6 +821,7 @@ input[type=range]::-moz-range-thumb{
       class="spatial-desc"
       id="spatialDesc">
     </div>
+    <div class="peq-subtitle">OFF giữ stereo gốc. NATURAL mở rộng nhẹ; WIDE mở rộng mạnh hơn. Mở rộng quá nhiều có thể làm center/vocal mỏng hoặc khiến một số tín hiệu ngoài pha bị suy giảm.</div>
 
 
     <!-- WIDTH EQ -->
@@ -829,7 +837,7 @@ input[type=range]::-moz-range-thumb{
         </div>
 
         <div class="feature-info">
-          EQ riêng cho Side — mở rộng có kiểm soát
+          EQ riêng cho Side — tăng cảm giác rộng và tách lớp; quá nhiều có thể làm âm hình loãng.
         </div>
 
       </div>
@@ -860,7 +868,7 @@ input[type=range]::-moz-range-thumb{
         </div>
 
         <div class="feature-info">
-          94% direct + 6% phase-decorrelated
+          94% direct + 6% phase-decorrelated; tăng độ lan tỏa rất nhẹ, có thể làm stereo bớt tập trung.
         </div>
 
       </div>
@@ -910,7 +918,7 @@ input[type=range]::-moz-range-thumb{
   <div class="footer">
 
     <span class="toggle-label">
-      DSP
+      DSP <span style="display:block;font-size:9px;color:var(--dim);letter-spacing:0;font-weight:400;margin-top:3px;">Master bypass · dùng chung thiết bị</span>
     </span>
 
     <label class="switch">
@@ -1118,9 +1126,10 @@ async function selectPreset(id){
       );
 
     renderAll();
+    await refreshCharacterDiagnostics();
 
     setStatus(
-      `Đang dùng preset ${presetNames[id] || id} — áp dụng ngay`
+      `Đang dùng preset ${presetNames[id] || id} — đã nạp cấu hình đã lưu`
     );
 
   }catch(err){
@@ -2122,7 +2131,7 @@ document
         );
 
         setStatus(
-          "Đã lưu PEQ, Analog Character và HF A/B, Dynamic Loudness, Stereo Spatial của preset vào flash (NVS)"
+          "Đã lưu toàn bộ cấu hình âm thanh của preset vào flash (NVS)"
         );
 
       }catch(err){
