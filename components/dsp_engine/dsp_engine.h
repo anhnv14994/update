@@ -144,7 +144,7 @@ void dsp_engine_process_inplace(uint8_t *pcm, size_t len_bytes);
 esp_err_t dsp_engine_set_enabled(bool enabled);
 bool      dsp_engine_get_enabled(void);
 
-/* AirPlay volume is applied after Character in float, before PCM16 output. */
+/* Volume monitor for optional loudness logic; actual AirPlay gain is applied after Spatial in I2S. */
 esp_err_t dsp_engine_set_output_volume(float volume);
 float     dsp_engine_get_output_volume(void);
 
