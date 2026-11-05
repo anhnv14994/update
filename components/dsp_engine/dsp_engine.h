@@ -74,7 +74,7 @@ typedef struct {
     uint8_t stage_mask;
     uint8_t feature_mask;
     uint32_t blocks;
-    uint32_t stage_avg_us[3]; /* Stage 3 slot is reserved and remains zero in V5. */
+    uint32_t stage_avg_us[3]; /* Stage 1, Stage 2, HF refinement. */
     uint32_t stage_max_us[3];
     uint32_t cpu_mhz;
 } dsp_character_diagnostics_t;
