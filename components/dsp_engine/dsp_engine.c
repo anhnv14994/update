@@ -2493,6 +2493,18 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
         &s_character_hf_a_strength_pct, memory_order_acquire) * 0.01f;
     const float character_hf_b_strength = (float)atomic_load_explicit(
         &s_character_hf_b_strength_pct, memory_order_acquire) * 0.01f;
+    const float target_output_volume = (float)atomic_load_explicit(
+        &s_output_volume_q, memory_order_acquire) * 0.000001f;
+    const bool dynamic_loudness_requested = atomic_load_explicit(
+        &s_dynamic_loudness_enabled, memory_order_acquire);
+
+    /* Reference point is actual 0.5 linear volume (about -6.0 dB). */
+    const float output_volume_db = 20.0f * log10f(fmaxf(target_output_volume, 0.001f));
+    const float below_reference_db = fmaxf(-6.0f - output_volume_db, 0.0f);
+    const float target_loudness_bass = dynamic_loudness_requested
+        ? db_to_linear(fminf(0.22f * below_reference_db, 3.0f)) : 1.0f;
+    const float target_loudness_treble = dynamic_loudness_requested
+        ? db_to_linear(fminf(0.07f * below_reference_db, 1.0f)) : 1.0f;
 
 
     /*
@@ -2518,20 +2530,84 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
         }
 
         const size_t bypass_frames = len_bytes / 4U;
+        float volume = s_output_state.volume_current;
+        const bool loudness_active =
+            dynamic_loudness_requested ||
+            fabsf(s_output_state.bass_gain - 1.0f) > 0.0001f ||
+            fabsf(s_output_state.treble_gain - 1.0f) > 0.0001f;
+
         for (size_t frame = 0; frame < bypass_frames; ++frame) {
+            volume += character_filters.output_volume_alpha *
+                (target_output_volume - volume);
+            s_output_state.bass_gain += character_filters.loudness_gain_alpha *
+                (target_loudness_bass - s_output_state.bass_gain);
+            s_output_state.treble_gain += character_filters.loudness_gain_alpha *
+                (target_loudness_treble - s_output_state.treble_gain);
+
             float left = (float)bypass_out[frame * 2U] * (1.0f / 32768.0f);
             float right = (float)bypass_out[frame * 2U + 1U] * (1.0f / 32768.0f);
 
             left = subsonic_hpf_process_sample(left, 0U);
             right = subsonic_hpf_process_sample(right, 1U);
 
-            float left_i16 = left * 32768.0f;
-            float right_i16 = right * 32768.0f;
-            left_i16 = clampf_local(left_i16, -32768.0f, 32767.0f);
-            right_i16 = clampf_local(right_i16, -32768.0f, 32767.0f);
+            if (loudness_active) {
+                if (!s_output_state.filter_initialized[0]) {
+                    s_output_state.low_lp[0] = left;
+                    s_output_state.high_lp[0] = left;
+                    s_output_state.filter_initialized[0] = true;
+                }
+                if (!s_output_state.filter_initialized[1]) {
+                    s_output_state.low_lp[1] = right;
+                    s_output_state.high_lp[1] = right;
+                    s_output_state.filter_initialized[1] = true;
+                }
 
-            bypass_out[frame * 2U] = (int16_t)left_i16;
-            bypass_out[frame * 2U + 1U] = (int16_t)right_i16;
+                s_output_state.low_lp[0] += character_filters.loudness_low_alpha *
+                    (left - s_output_state.low_lp[0]);
+                s_output_state.low_lp[1] += character_filters.loudness_low_alpha *
+                    (right - s_output_state.low_lp[1]);
+                s_output_state.high_lp[0] += character_filters.loudness_high_alpha *
+                    (left - s_output_state.high_lp[0]);
+                s_output_state.high_lp[1] += character_filters.loudness_high_alpha *
+                    (right - s_output_state.high_lp[1]);
+
+                left += s_output_state.low_lp[0] * (s_output_state.bass_gain - 1.0f) +
+                    (left - s_output_state.high_lp[0]) * (s_output_state.treble_gain - 1.0f);
+                right += s_output_state.low_lp[1] * (s_output_state.bass_gain - 1.0f) +
+                    (right - s_output_state.high_lp[1]) * (s_output_state.treble_gain - 1.0f);
+            }
+
+            /* Bypass omits PEQ/Character but retains preset master for fair ON/OFF tests. */
+            left *= master_linear * volume;
+            right *= master_linear * volume;
+
+            const float knee = 0.94f;
+            const float range = 0.045f;
+            float a = fabsf(left);
+            if (a > knee) {
+                const float over = a - knee;
+                left = copysignf(knee + over / (1.0f + over / range), left);
+            }
+            a = fabsf(right);
+            if (a > knee) {
+                const float over = a - knee;
+                right = copysignf(knee + over / (1.0f + over / range), right);
+            }
+
+            left = clampf_local(left, -0.985f, 0.985f);
+            right = clampf_local(right, -0.985f, 0.985f);
+            bypass_out[frame * 2U] = (int16_t)(left * 32768.0f);
+            bypass_out[frame * 2U + 1U] = (int16_t)(right * 32768.0f);
+        }
+
+        s_output_state.volume_current = volume;
+        if (!dynamic_loudness_requested &&
+            fabsf(s_output_state.bass_gain - 1.0f) < 0.0002f &&
+            fabsf(s_output_state.treble_gain - 1.0f) < 0.0002f) {
+            s_output_state.bass_gain = 1.0f;
+            s_output_state.treble_gain = 1.0f;
+            s_output_state.filter_initialized[0] = false;
+            s_output_state.filter_initialized[1] = false;
         }
 
         return pcm_out ? pcm_out : s_scratch;
@@ -2662,6 +2738,12 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
     const float block_alpha = cached_block_alpha;
     const float inv_frames = cached_inv_frames;
 
+    float output_volume = s_output_state.volume_current;
+    const bool loudness_active =
+        dynamic_loudness_requested ||
+        fabsf(s_output_state.bass_gain - 1.0f) > 0.0001f ||
+        fabsf(s_output_state.treble_gain - 1.0f) > 0.0001f;
+
     character_state_t *cs = &s_character_state;
 
     const float target_warmth =
@@ -2775,7 +2857,7 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
 
 #if CONFIG_DSP_CHARACTER_PROFILE
     /* Opt-in only: cycle-counter reads stay out of normal playback builds. */
-    uint32_t character_stage_cycles[CHARACTER_STAGE_COUNT] = {0};
+    uint32_t character_stage_cycles[DSP_CHARACTER_DIAG_SLOTS] = {0};
 #endif
 
     for (size_t i = 0;
@@ -2789,6 +2871,13 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
             current_dynamic_scale += dynamic_scale_step;
         if (interaction_for_stage2)
             current_interaction_scale += interaction_scale_step;
+
+        output_volume += character_filters.output_volume_alpha *
+            (target_output_volume - output_volume);
+        s_output_state.bass_gain += character_filters.loudness_gain_alpha *
+            (target_loudness_bass - s_output_state.bass_gain);
+        s_output_state.treble_gain += character_filters.loudness_gain_alpha *
+            (target_loudness_treble - s_output_state.treble_gain);
 
 #if CONFIG_DSP_PEQ_USE_ESP_DSP_AES3
         float yl = s_peq_left[i];
@@ -2976,6 +3065,9 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
          * Fast/slow magnitude envelopes suppress steady-state hiss; no
          * cubic harmonics, static EQ lift, allocation, or audio-task locks.
          */
+#if CONFIG_DSP_CHARACTER_PROFILE
+        const uint32_t hf_stage_start_cycles = esp_cpu_get_cycle_count();
+#endif
         {
             character_hf_state_t *hf = &s_character_hf_state;
             const float target_a = character_hf_a_requested ? character_hf_a_strength : 0.0f;
@@ -3023,9 +3115,16 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
                         (hf->fast_env_b[ch] - 1.30f * hf->slow_env_b[ch] - 0.0009f) /
                         (hf->fast_env_b[ch] + 0.0015f), 0.0f, 1.0f);
 
+                    /* Gentle spectral sibilance guard. It never hard-mutes B:
+                     * cymbals may share the same high/low band ratio. */
+                    const float hf_sib_ratio = hf->slow_env_b[ch] /
+                        (hf->slow_env_a[ch] + 0.0005f);
+                    const float hf_sib_guard = 1.0f - 0.35f * clampf_local(
+                        (hf_sib_ratio - 0.75f) / 1.25f, 0.0f, 1.0f);
+
                     float y = x;
                     y += band_a * transient_a * hf->mix_a * 0.09648f;
-                    y += band_b * transient_b * hf->mix_b * 0.05925f;
+                    y += band_b * transient_b * hf->mix_b * 0.05925f * hf_sib_guard;
 
                     if (ch == 0) yl = y;
                     else yr = y;
@@ -3034,6 +3133,10 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
                 memset(hf, 0, sizeof(*hf));
             }
         }
+#if CONFIG_DSP_CHARACTER_PROFILE
+        character_stage_cycles[2] +=
+            (uint32_t)(esp_cpu_get_cycle_count() - hf_stage_start_cycles);
+#endif
 
         /*
          * ----------------------------------------------------
@@ -3045,17 +3148,43 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
         yl = subsonic_hpf_process_sample(yl, 0U);
         yr = subsonic_hpf_process_sample(yr, 1U);
 
+        if (loudness_active) {
+            if (!s_output_state.filter_initialized[0]) {
+                s_output_state.low_lp[0] = yl;
+                s_output_state.high_lp[0] = yl;
+                s_output_state.filter_initialized[0] = true;
+            }
+            if (!s_output_state.filter_initialized[1]) {
+                s_output_state.low_lp[1] = yr;
+                s_output_state.high_lp[1] = yr;
+                s_output_state.filter_initialized[1] = true;
+            }
+
+            s_output_state.low_lp[0] += character_filters.loudness_low_alpha *
+                (yl - s_output_state.low_lp[0]);
+            s_output_state.low_lp[1] += character_filters.loudness_low_alpha *
+                (yr - s_output_state.low_lp[1]);
+            s_output_state.high_lp[0] += character_filters.loudness_high_alpha *
+                (yl - s_output_state.high_lp[0]);
+            s_output_state.high_lp[1] += character_filters.loudness_high_alpha *
+                (yr - s_output_state.high_lp[1]);
+
+            yl += s_output_state.low_lp[0] * (s_output_state.bass_gain - 1.0f) +
+                (yl - s_output_state.high_lp[0]) * (s_output_state.treble_gain - 1.0f);
+            yr += s_output_state.low_lp[1] * (s_output_state.bass_gain - 1.0f) +
+                (yr - s_output_state.high_lp[1]) * (s_output_state.treble_gain - 1.0f);
+        } else {
+            s_output_state.filter_initialized[0] = false;
+            s_output_state.filter_initialized[1] = false;
+        }
+
         /*
          * ----------------------------------------------------
-         * Master
+         * Master + post-Character AirPlay volume
          * ----------------------------------------------------
          */
-
-        yl *=
-            master_linear;
-
-        yr *=
-            master_linear;
+        yl *= master_linear * output_volume;
+        yr *= master_linear * output_volume;
 
 
         /*
@@ -3098,13 +3227,23 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
     }
 
 
+    s_output_state.volume_current = output_volume;
+    if (!dynamic_loudness_requested &&
+        fabsf(s_output_state.bass_gain - 1.0f) < 0.0002f &&
+        fabsf(s_output_state.treble_gain - 1.0f) < 0.0002f) {
+        s_output_state.bass_gain = 1.0f;
+        s_output_state.treble_gain = 1.0f;
+        s_output_state.filter_initialized[0] = false;
+        s_output_state.filter_initialized[1] = false;
+    }
+
 #if CONFIG_DSP_CHARACTER_PROFILE
-    if (character_enabled) {
+    if (character_enabled || character_hf_a_requested || character_hf_b_requested) {
         const uint32_t cpu_mhz =
             (CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ > 0)
             ? CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ : 240U;
 
-        for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+        for (unsigned stage = 0; stage < DSP_CHARACTER_DIAG_SLOTS; ++stage) {
             const uint32_t elapsed_us = character_stage_cycles[stage] / cpu_mhz;
             atomic_fetch_add_explicit(
                 &s_character_diag_stage_total_us[stage],
