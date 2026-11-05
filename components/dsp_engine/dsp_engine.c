@@ -3083,9 +3083,6 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
          * Fast/slow magnitude envelopes suppress steady-state hiss; no
          * cubic harmonics, static EQ lift, allocation, or audio-task locks.
          */
-#if CONFIG_DSP_CHARACTER_PROFILE
-        const uint32_t hf_stage_start_cycles = esp_cpu_get_cycle_count();
-#endif
         {
             character_hf_state_t *hf = &s_character_hf_state;
             const float target_a = character_hf_a_requested ? character_hf_a_strength : 0.0f;
@@ -3093,56 +3090,89 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
             hf->mix_a += character_filters.hf_mix_alpha * (target_a - hf->mix_a);
             hf->mix_b += character_filters.hf_mix_alpha * (target_b - hf->mix_b);
 
-            const bool hf_active = target_a > 0.00001f || target_b > 0.00001f ||
-                hf->mix_a > 0.00001f || hf->mix_b > 0.00001f;
+            const bool a_active =
+                target_a > 0.00001f || hf->mix_a > 0.00001f;
+            const bool b_active =
+                target_b > 0.00001f || hf->mix_b > 0.00001f;
+            const bool hf_active = a_active || b_active;
+
+#if CONFIG_DSP_CHARACTER_PROFILE
+            const uint32_t hf_stage_start_cycles =
+                hf_active ? esp_cpu_get_cycle_count() : 0U;
+#endif
 
             if (hf_active) {
                 hf->history_active = true;
                 for (unsigned ch = 0; ch < 2; ++ch) {
                     const float x = (ch == 0) ? yl : yr;
+
+                    /* A detector is also the low-band reference for B's guard. */
                     const float band_a = biquad_process_sample(
                         x, &character_filters.hf_band_a, &hf->band_a[ch]);
-                    const float band_b = biquad_process_sample(
-                        x, &character_filters.hf_band_b, &hf->band_b[ch]);
-
                     const float abs_a = fabsf(band_a);
-                    const float abs_b = fabsf(band_b);
 
-                    float alpha = (abs_a > hf->fast_env_a[ch])
-                        ? character_filters.hf_fast_attack_alpha
-                        : character_filters.hf_fast_release_alpha;
-                    hf->fast_env_a[ch] += alpha * (abs_a - hf->fast_env_a[ch]);
-                    alpha = (abs_a > hf->slow_env_a[ch])
+                    float transient_a = 0.0f;
+                    if (a_active) {
+                        float alpha = (abs_a > hf->fast_env_a[ch])
+                            ? character_filters.hf_fast_attack_alpha
+                            : character_filters.hf_fast_release_alpha;
+                        hf->fast_env_a[ch] += alpha *
+                            (abs_a - hf->fast_env_a[ch]);
+                        transient_a = clampf_local(
+                            (hf->fast_env_a[ch] -
+                             1.25f * hf->slow_env_a[ch] - 0.0006f) /
+                            (hf->fast_env_a[ch] + 0.0012f), 0.0f, 1.0f);
+                    } else {
+                        /* B-only mode needs the slow A reference, not A attack tracking. */
+                        hf->fast_env_a[ch] = 0.0f;
+                    }
+
+                    float alpha = (abs_a > hf->slow_env_a[ch])
                         ? character_filters.hf_slow_attack_alpha
                         : character_filters.hf_slow_release_alpha;
-                    hf->slow_env_a[ch] += alpha * (abs_a - hf->slow_env_a[ch]);
-
-                    alpha = (abs_b > hf->fast_env_b[ch])
-                        ? character_filters.hf_fast_attack_alpha
-                        : character_filters.hf_fast_release_alpha;
-                    hf->fast_env_b[ch] += alpha * (abs_b - hf->fast_env_b[ch]);
-                    alpha = (abs_b > hf->slow_env_b[ch])
-                        ? character_filters.hf_slow_attack_alpha
-                        : character_filters.hf_slow_release_alpha;
-                    hf->slow_env_b[ch] += alpha * (abs_b - hf->slow_env_b[ch]);
-
-                    const float transient_a = clampf_local(
-                        (hf->fast_env_a[ch] - 1.25f * hf->slow_env_a[ch] - 0.0006f) /
-                        (hf->fast_env_a[ch] + 0.0012f), 0.0f, 1.0f);
-                    const float transient_b = clampf_local(
-                        (hf->fast_env_b[ch] - 1.30f * hf->slow_env_b[ch] - 0.0009f) /
-                        (hf->fast_env_b[ch] + 0.0015f), 0.0f, 1.0f);
-
-                    /* Gentle spectral sibilance guard. It never hard-mutes B:
-                     * cymbals may share the same high/low band ratio. */
-                    const float hf_sib_ratio = hf->slow_env_b[ch] /
-                        (hf->slow_env_a[ch] + 0.0005f);
-                    const float hf_sib_guard = 1.0f - 0.35f * clampf_local(
-                        (hf_sib_ratio - 0.75f) / 1.25f, 0.0f, 1.0f);
+                    hf->slow_env_a[ch] += alpha *
+                        (abs_a - hf->slow_env_a[ch]);
 
                     float y = x;
-                    y += band_a * transient_a * hf->mix_a * 0.09648f;
-                    y += band_b * transient_b * hf->mix_b * 0.05925f * hf_sib_guard;
+                    if (a_active)
+                        y += band_a * transient_a * hf->mix_a * 0.09648f;
+
+                    if (b_active) {
+                        const float band_b = biquad_process_sample(
+                            x, &character_filters.hf_band_b, &hf->band_b[ch]);
+                        const float abs_b = fabsf(band_b);
+
+                        alpha = (abs_b > hf->fast_env_b[ch])
+                            ? character_filters.hf_fast_attack_alpha
+                            : character_filters.hf_fast_release_alpha;
+                        hf->fast_env_b[ch] += alpha *
+                            (abs_b - hf->fast_env_b[ch]);
+                        alpha = (abs_b > hf->slow_env_b[ch])
+                            ? character_filters.hf_slow_attack_alpha
+                            : character_filters.hf_slow_release_alpha;
+                        hf->slow_env_b[ch] += alpha *
+                            (abs_b - hf->slow_env_b[ch]);
+
+                        const float transient_b = clampf_local(
+                            (hf->fast_env_b[ch] -
+                             1.30f * hf->slow_env_b[ch] - 0.0009f) /
+                            (hf->fast_env_b[ch] + 0.0015f), 0.0f, 1.0f);
+
+                        /* Partial guard only: cymbals can share this spectrum. */
+                        const float hf_sib_ratio = hf->slow_env_b[ch] /
+                            (hf->slow_env_a[ch] + 0.0005f);
+                        const float hf_sib_guard = 1.0f - 0.35f *
+                            clampf_local(
+                                (hf_sib_ratio - 0.75f) / 1.25f, 0.0f, 1.0f);
+
+                        y += band_b * transient_b * hf->mix_b *
+                            0.05925f * hf_sib_guard;
+                    } else {
+                        /* Prevent stale B history from reappearing when enabled later. */
+                        memset(&hf->band_b[ch], 0, sizeof(hf->band_b[ch]));
+                        hf->fast_env_b[ch] = 0.0f;
+                        hf->slow_env_b[ch] = 0.0f;
+                    }
 
                     if (ch == 0) yl = y;
                     else yr = y;
@@ -3150,11 +3180,14 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
             } else if (hf->history_active) {
                 memset(hf, 0, sizeof(*hf));
             }
-        }
+
 #if CONFIG_DSP_CHARACTER_PROFILE
-        character_stage_cycles[2] +=
-            (uint32_t)(esp_cpu_get_cycle_count() - hf_stage_start_cycles);
+            if (hf_active) {
+                character_stage_cycles[2] +=
+                    (uint32_t)(esp_cpu_get_cycle_count() - hf_stage_start_cycles);
+            }
 #endif
+        }
 
         /*
          * ----------------------------------------------------
