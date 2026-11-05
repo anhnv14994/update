@@ -29,7 +29,7 @@ static httpd_handle_t web_server = NULL;
 static raop_handle_t *raop_handle = NULL;
 static struct udp_pcb *dns_pcb = NULL;
 
-// Audio output callback - runs the DSP chain (PEQ + shelf + master gain),
+// Audio output callback - runs DSP (PEQ + shelf + Analog Character + subsonic HPF + master),
 // then Stereo Spatial (frequency-dependent M/S widening), then forwards to
 // I2S hardware exactly as before. The AirPlay/ALAC/buffer pipeline that
 // calls this is untouched; when both stages are disabled, each hands back
