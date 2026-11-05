@@ -3,6 +3,7 @@
 #include "stereo_spatial.h"
 #include "esp_log.h"
 #include "cJSON.h"
+#include "nvs.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -11,6 +12,182 @@ extern stereo_spatial_ctx_t *g_stereo_ctx;
 void stereo_spatial_get_config(const stereo_spatial_ctx_t *ctx, stereo_spatial_config_t *cfg);
 
 static const char *TAG = "dsp_api";
+
+#define DSP_OPTIONS_MAGIC   0x4453504FU /* "DSPO" */
+#define DSP_OPTIONS_VERSION 1U
+#define DSP_OPTIONS_NS      "dsp_opts"
+
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint8_t hf_a_enabled;
+    uint8_t hf_b_enabled;
+    uint8_t hf_a_strength_pct;
+    uint8_t hf_b_strength_pct;
+    uint8_t dynamic_loudness_enabled;
+    uint8_t spatial_mode;
+    uint8_t enable_width_eq;
+    uint8_t enable_decorrelator;
+} dsp_preset_options_blob_t;
+
+static void apply_default_preset_options(void)
+{
+    (void)dsp_engine_set_character_hf(false, false, 0U, 0U);
+    (void)dsp_engine_set_dynamic_loudness(false);
+    if (g_stereo_ctx) {
+        const stereo_spatial_config_t cfg = {
+            .mode = STEREO_SPATIAL_MODE_OFF,
+            .enable_width_eq = false,
+            .enable_decorrelator = false
+        };
+        stereo_spatial_set_config(g_stereo_ctx, &cfg);
+    }
+}
+
+static esp_err_t apply_preset_options(dsp_preset_id_t id)
+{
+    if (id < 0 || id >= DSP_NUM_PRESETS)
+        return ESP_ERR_INVALID_ARG;
+
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(DSP_OPTIONS_NS, NVS_READONLY, &nvs);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            apply_default_preset_options();
+            return ESP_OK;
+        }
+        return err;
+    }
+
+    char key[8];
+    snprintf(key, sizeof(key), "o%d", (int)id);
+    dsp_preset_options_blob_t blob;
+    size_t len = sizeof(blob);
+    err = nvs_get_blob(nvs, key, &blob, &len);
+    nvs_close(nvs);
+
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        apply_default_preset_options();
+        return ESP_OK;
+    }
+    if (err != ESP_OK)
+        return err;
+
+    if (len != sizeof(blob) || blob.magic != DSP_OPTIONS_MAGIC ||
+        blob.version != DSP_OPTIONS_VERSION ||
+        blob.hf_a_strength_pct > 100U || blob.hf_b_strength_pct > 100U ||
+        blob.spatial_mode > STEREO_SPATIAL_MODE_WIDE) {
+        ESP_LOGW(TAG, "Preset %d options invalid; using defaults", (int)id);
+        apply_default_preset_options();
+        return ESP_OK;
+    }
+
+    err = dsp_engine_set_character_hf(
+        blob.hf_a_enabled != 0U, blob.hf_b_enabled != 0U,
+        blob.hf_a_strength_pct, blob.hf_b_strength_pct);
+    if (err != ESP_OK)
+        return err;
+
+    err = dsp_engine_set_dynamic_loudness(
+        blob.dynamic_loudness_enabled != 0U);
+    if (err != ESP_OK)
+        return err;
+
+    if (g_stereo_ctx) {
+        const stereo_spatial_config_t cfg = {
+            .mode = (stereo_spatial_mode_t)blob.spatial_mode,
+            .enable_width_eq = blob.enable_width_eq != 0U,
+            .enable_decorrelator = blob.enable_decorrelator != 0U
+        };
+        stereo_spatial_set_config(g_stereo_ctx, &cfg);
+    }
+
+    ESP_LOGI(TAG, "Preset %d options loaded: HF=%u/%u Loudness=%u Spatial=%u",
+             (int)id, blob.hf_a_enabled, blob.hf_b_enabled,
+             blob.dynamic_loudness_enabled, blob.spatial_mode);
+    return ESP_OK;
+}
+
+static esp_err_t save_preset_options(dsp_preset_id_t id)
+{
+    if (id < 0 || id >= DSP_NUM_PRESETS)
+        return ESP_ERR_INVALID_ARG;
+
+    dsp_preset_options_blob_t blob = {
+        .magic = DSP_OPTIONS_MAGIC,
+        .version = DSP_OPTIONS_VERSION
+    };
+
+    bool hf_a = false, hf_b = false;
+    uint8_t hf_a_strength = 0U, hf_b_strength = 0U;
+    esp_err_t err = dsp_engine_get_character_hf(
+        &hf_a, &hf_b, &hf_a_strength, &hf_b_strength);
+    if (err != ESP_OK)
+        return err;
+
+    blob.hf_a_enabled = hf_a ? 1U : 0U;
+    blob.hf_b_enabled = hf_b ? 1U : 0U;
+    blob.hf_a_strength_pct = hf_a_strength;
+    blob.hf_b_strength_pct = hf_b_strength;
+    blob.dynamic_loudness_enabled =
+        dsp_engine_get_dynamic_loudness() ? 1U : 0U;
+
+    if (g_stereo_ctx) {
+        stereo_spatial_config_t cfg;
+        stereo_spatial_get_config(g_stereo_ctx, &cfg);
+        blob.spatial_mode = (uint8_t)cfg.mode;
+        blob.enable_width_eq = cfg.enable_width_eq ? 1U : 0U;
+        blob.enable_decorrelator = cfg.enable_decorrelator ? 1U : 0U;
+    }
+
+    nvs_handle_t nvs;
+    err = nvs_open(DSP_OPTIONS_NS, NVS_READWRITE, &nvs);
+    if (err != ESP_OK)
+        return err;
+
+    char key[8];
+    snprintf(key, sizeof(key), "o%d", (int)id);
+    err = nvs_set_blob(nvs, key, &blob, sizeof(blob));
+    if (err == ESP_OK)
+        err = nvs_commit(nvs);
+    nvs_close(nvs);
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Preset %d options saved: HF=%u/%u Loudness=%u Spatial=%u",
+                 (int)id, blob.hf_a_enabled, blob.hf_b_enabled,
+                 blob.dynamic_loudness_enabled, blob.spatial_mode);
+    }
+    return err;
+}
+
+static esp_err_t reset_preset_options(dsp_preset_id_t id)
+{
+    if (id < 0 || id >= DSP_NUM_PRESETS)
+        return ESP_ERR_INVALID_ARG;
+
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(DSP_OPTIONS_NS, NVS_READWRITE, &nvs);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        apply_default_preset_options();
+        return ESP_OK;
+    }
+    if (err != ESP_OK)
+        return err;
+
+    char key[8];
+    snprintf(key, sizeof(key), "o%d", (int)id);
+    err = nvs_erase_key(nvs, key);
+    if (err == ESP_ERR_NVS_NOT_FOUND)
+        err = ESP_OK;
+    if (err == ESP_OK)
+        err = nvs_commit(nvs);
+    nvs_close(nvs);
+
+    if (err == ESP_OK)
+        apply_default_preset_options();
+    return err;
+}
+
 
 extern const char web_dsp_html_start[] asm("_binary_web_dsp_html_start");
 extern const char web_dsp_html_end[]   asm("_binary_web_dsp_html_end");
@@ -907,13 +1084,14 @@ static esp_err_t api_select_handler(
     }
 
 
-    dsp_engine_select_preset(
-        (dsp_preset_id_t)
-        preset->valueint
-    );
-
+    const dsp_preset_id_t selected = (dsp_preset_id_t)preset->valueint;
+    esp_err_t err = dsp_engine_select_preset(selected);
+    if (err == ESP_OK)
+        err = apply_preset_options(selected);
 
     cJSON_Delete(body);
+    if (err != ESP_OK)
+        return send_error_json(req, 500, "cannot load preset options");
 
     return send_state(req);
 }
@@ -1196,6 +1374,10 @@ static esp_err_t api_save_handler(
     if (err != ESP_OK)
         return send_error_json(req, 500, "nvs character write failed");
 
+    err = save_preset_options(target);
+    if (err != ESP_OK)
+        return send_error_json(req, 500, "nvs preset options write failed");
+
     return send_state(req);
 }
 
@@ -1233,12 +1415,11 @@ static esp_err_t api_reset_handler(
 
 
     if (err != ESP_OK)
-        return send_error_json(
-            req,
-            500,
-            "reset failed"
-        );
+        return send_error_json(req, 500, "reset failed");
 
+    err = reset_preset_options(target);
+    if (err != ESP_OK)
+        return send_error_json(req, 500, "preset options reset failed");
 
     return send_state(req);
 }
@@ -1255,6 +1436,11 @@ esp_err_t dsp_api_register(
     if (!server)
         return ESP_ERR_INVALID_ARG;
 
+    /* NVS + Stereo Spatial are initialized before the DSP routes register. */
+    esp_err_t options_err = apply_preset_options(dsp_engine_get_active_preset());
+    if (options_err != ESP_OK)
+        ESP_LOGW(TAG, "Active preset options load failed: %s",
+                 esp_err_to_name(options_err));
 
     static const httpd_uri_t routes[] = {
 
