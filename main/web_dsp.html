@@ -680,7 +680,7 @@ input[type=range]::-moz-range-thumb{
         <label class="switch"><input type="checkbox" id="charFeatDrive" checked><span class="slider-toggle"></span></label>
       </div>
 
-      <div class="character-diag-title">High-frequency refinement · session only</div>
+      <div class="character-diag-title">High-frequency refinement · lưu theo preset</div>
       <div class="feature">
         <div class="feature-text"><div class="feature-name">HF A · Articulation / 2–5 kHz</div><div class="feature-info">Tăng micro-transient của vocal, guitar, piano; không tạo H3 và không nâng treble liên tục.</div></div>
         <label class="switch"><input type="checkbox" id="characterHfAEnabled"><span class="slider-toggle"></span></label>
@@ -699,14 +699,14 @@ input[type=range]::-moz-range-thumb{
         <input type="range" min="0" max="100" step="1" value="0" id="characterHfBStrength">
         <div class="peq-subtitle">0–100% · transient lift tối đa +0.5 dB</div>
       </div>
-      <div class="peq-subtitle">A/B độc lập, mặc định OFF + 0%, chỉ lưu trong phiên chạy. HF B có spectral guard nhẹ; Mix ramp 8 ms.</div>
+      <div class="peq-subtitle">A/B độc lập, mặc định OFF + 0%. Trạng thái và strength được lưu riêng theo từng preset. HF B có spectral guard nhẹ; Mix ramp 8 ms.</div>
 
-      <div class="character-diag-title">Dynamic Loudness · session only</div>
+      <div class="character-diag-title">Dynamic Loudness · lưu theo preset</div>
       <div class="feature">
         <div class="feature-text"><div class="feature-name">Low-volume compensation</div><div class="feature-info">Bù nhẹ bass và air khi volume AirPlay thấp; OFF mặc định để giữ đáp tuyến phẳng.</div></div>
         <label class="switch"><input type="checkbox" id="dynamicLoudnessEnabled"><span class="slider-toggle"></span></label>
       </div>
-      <div class="peq-subtitle">Mốc tương đối −6 dB theo AirPlay volume × master preset (không phải hiệu chuẩn SPL). Tối đa +3 dB vùng thấp quanh 110 Hz và +1 dB dải cao trên 9 kHz; chuyển 50 ms. OFF mặc định, không lưu NVS.</div>
+      <div class="peq-subtitle">Mốc tương đối −6 dB theo AirPlay volume × master preset (không phải hiệu chuẩn SPL). Tối đa +3 dB vùng thấp quanh 110 Hz và +1 dB dải cao trên 9 kHz; chuyển 50 ms. OFF mặc định; trạng thái ON/OFF được lưu riêng theo từng preset.</div>
 
       <div class="character-diag-title">Processing time · µs per 352-sample frame</div>
       <div class="peq-subtitle">Cycle-counter elapsed time; may include scheduler preemption, so compare relative stage cost.</div>
@@ -2122,7 +2122,7 @@ document
         );
 
         setStatus(
-          "Đã lưu preset + Analog Character V5.1 Lite vào flash (NVS)"
+          "Đã lưu PEQ, Analog Character và HF A/B, Dynamic Loudness, Stereo Spatial của preset vào flash (NVS)"
         );
 
       }catch(err){
