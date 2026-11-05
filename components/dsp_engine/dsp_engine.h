@@ -52,7 +52,7 @@ typedef struct {
 } dsp_preset_t;
 
 /* ============================================================
- * Analog Character diagnostic bypass masks (session-only)
+ * Analog Character diagnostic bypass masks (persisted per preset by dsp_api)
  * ============================================================ */
 
 #define DSP_CHARACTER_STAGE_1          (1U << 0)
