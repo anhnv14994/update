@@ -526,7 +526,7 @@ input[type=range]::-moz-range-thumb{
   <div class="titlebar">
     DSP <span>SOUND</span>
     <div style="font-size:9px;letter-spacing:1.5px;color:#e0b155;margin-top:6px;">
-      V6.6 · HF REFINEMENT A/B · SUBSONIC HPF 30 HZ / 24 DB/OCT
+      V6.6.1 · HF REFINEMENT A/B · SUBSONIC HPF 30 HZ / 24 DB/OCT
     </div>
   </div>
 
@@ -682,14 +682,24 @@ input[type=range]::-moz-range-thumb{
 
       <div class="character-diag-title">High-frequency refinement · session only</div>
       <div class="feature">
-        <div class="feature-text"><div class="feature-name">HF A · Presence / 2–5 kHz</div><div class="feature-info">Cubic H3 refinement rất nhẹ, tăng articulation vùng guitar/piano/vocal.</div></div>
+        <div class="feature-text"><div class="feature-name">HF A · Articulation / 2–5 kHz</div><div class="feature-info">Tăng micro-transient của vocal, guitar, piano; không tạo H3 và không nâng treble liên tục.</div></div>
         <label class="switch"><input type="checkbox" id="characterHfAEnabled"><span class="slider-toggle"></span></label>
       </div>
+      <div class="band">
+        <div class="band-head"><span class="freq-role">HF A STRENGTH</span><span class="gain-val" id="characterHfAStrengthVal">0%</span></div>
+        <input type="range" min="0" max="100" step="1" value="0" id="characterHfAStrength">
+        <div class="peq-subtitle">0–100% · transient lift tối đa +0.8 dB</div>
+      </div>
       <div class="feature">
-        <div class="feature-text"><div class="feature-name">HF B · Transient / 5–10 kHz</div><div class="feature-info">Nhấn transient rất nhẹ cho cymbal và tiếng gõ; không boost shelf cố định.</div></div>
+        <div class="feature-text"><div class="feature-name">HF B · Micro-transient / 5–10 kHz</div><div class="feature-info">Giữ độ bật của cymbal/tiếng gõ, chỉ tác động lúc có attack; hạn chế nhấn hiss kéo dài.</div></div>
         <label class="switch"><input type="checkbox" id="characterHfBEnabled"><span class="slider-toggle"></span></label>
       </div>
-      <div class="peq-subtitle">A và B độc lập, mặc định OFF, không lưu NVS. Chỉ hoạt động khi DSP tổng đang ON.</div>
+      <div class="band">
+        <div class="band-head"><span class="freq-role">HF B STRENGTH</span><span class="gain-val" id="characterHfBStrengthVal">0%</span></div>
+        <input type="range" min="0" max="100" step="1" value="0" id="characterHfBStrength">
+        <div class="peq-subtitle">0–100% · transient lift tối đa +0.5 dB</div>
+      </div>
+      <div class="peq-subtitle">A/B độc lập, mặc định OFF + 0%, chỉ lưu trong phiên chạy, không ghi NVS. Mix ramp 8 ms để tránh click.</div>
 
       <div class="character-diag-title">Stage processing time · µs per 352-sample frame</div>
       <div class="peq-subtitle">Cycle-counter elapsed time; may include scheduler preemption, so compare relative stage cost.</div>
@@ -1608,6 +1618,12 @@ function renderCharacter(){
     !!c.dynamic_saturation_enabled;
   document.getElementById("characterHfAEnabled").checked = !!c.hf_a_enabled;
   document.getElementById("characterHfBEnabled").checked = !!c.hf_b_enabled;
+  const hfAStrength = Math.max(0, Math.min(100, Number(c.hf_a_strength_pct ?? 0)));
+  const hfBStrength = Math.max(0, Math.min(100, Number(c.hf_b_strength_pct ?? 0)));
+  document.getElementById("characterHfAStrength").value = hfAStrength;
+  document.getElementById("characterHfBStrength").value = hfBStrength;
+  document.getElementById("characterHfAStrengthVal").textContent = String(Math.round(hfAStrength)) + "%";
+  document.getElementById("characterHfBStrengthVal").textContent = String(Math.round(hfBStrength)) + "%";
 
   const mode = Number(c.mode ?? 0);
   document.getElementById("characterTube").classList.toggle("active", mode === 1);
@@ -1683,21 +1699,55 @@ characterControls.concat(characterModifierControls).forEach(([inputId, key, valu
   document.getElementById(id).addEventListener("change", updateCharacter);
 });
 
-[ ["characterHfAEnabled", "hf_a_enabled", "HF A · Presence"],
-  ["characterHfBEnabled", "hf_b_enabled", "HF B · Transient"]
-].forEach(([id, key, label]) => {
+let characterHfTimer = null;
+
+function characterHfPayload(){
+  return {
+    hf_a_enabled: document.getElementById("characterHfAEnabled").checked,
+    hf_b_enabled: document.getElementById("characterHfBEnabled").checked,
+    hf_a_strength_pct: Number(document.getElementById("characterHfAStrength").value),
+    hf_b_strength_pct: Number(document.getElementById("characterHfBStrength").value)
+  };
+}
+
+async function updateCharacterHF(){
+  try{
+    state = await api("/api/dsp/character", characterHfPayload());
+    renderCharacter();
+  }catch(err){
+    console.error(err);
+    setStatus("Không thể cập nhật HF A/B");
+    await refresh();
+  }
+}
+
+function scheduleCharacterHFUpdate(){
+  clearTimeout(characterHfTimer);
+  characterHfTimer = setTimeout(updateCharacterHF, 180);
+}
+
+[
+  ["characterHfAEnabled", "HF A"],
+  ["characterHfBEnabled", "HF B"]
+].forEach(([id, label]) => {
   document.getElementById(id).addEventListener("change", async e => {
-    const payload = {};
-    payload[key] = e.target.checked;
-    try{
-      state = await api("/api/dsp/character", payload);
-      renderCharacter();
-      setStatus(`${label} ${e.target.checked ? "ON" : "OFF"}`);
-    }catch(err){
-      console.error(err);
-      setStatus(`Không thể bật/tắt ${label}`);
-      await refresh();
-    }
+    await updateCharacterHF();
+    setStatus(label + (e.target.checked ? " ON" : " OFF"));
+  });
+});
+
+[
+  ["characterHfAStrength", "characterHfAStrengthVal"],
+  ["characterHfBStrength", "characterHfBStrengthVal"]
+].forEach(([id, valueId]) => {
+  const slider = document.getElementById(id);
+  slider.addEventListener("input", e => {
+    document.getElementById(valueId).textContent = String(Math.round(Number(e.target.value))) + "%";
+    scheduleCharacterHFUpdate();
+  });
+  slider.addEventListener("change", () => {
+    clearTimeout(characterHfTimer);
+    updateCharacterHF();
   });
 });
 
