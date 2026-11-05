@@ -88,7 +88,10 @@ static void audio_output_callback(const uint8_t *data, size_t len, void *user_da
 static void raop_volume_callback(float volume, void *user_ctx)
 {
     (void)user_ctx;
+    /* DSP uses this value only for optional loudness tracking. */
     (void)dsp_engine_set_output_volume(volume);
+    /* Actual AirPlay gain is applied after Stereo Spatial, at final I2S output. */
+    i2s_output_set_volume(volume);
 }
 
 static void raop_event_handler(raop_event_t event, void *event_data, void *user_ctx)
