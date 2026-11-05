@@ -288,7 +288,7 @@ static dsp_output_state_t s_output_state = {
 
 /* Third diagnostic slot measures the optional HF refinement path. */
 #define DSP_CHARACTER_DIAG_SLOTS 3U
-/* Runtime-only diagnostic switches; deliberately excluded from NVS. */
+/* A/B diagnostic masks are persisted per preset; timing counters remain runtime-only. */
 static _Atomic uint32_t s_character_diag_stage_mask = DSP_CHARACTER_STAGE_MASK_ALL;
 static _Atomic uint32_t s_character_diag_feature_mask = DSP_CHARACTER_FEATURE_MASK_ALL;
 static _Atomic uint32_t s_character_diag_blocks = 0;
@@ -1696,7 +1696,7 @@ esp_err_t dsp_engine_set_dynamic_loudness(bool enabled)
     const bool previous = atomic_exchange_explicit(
         &s_dynamic_loudness_enabled, enabled, memory_order_acq_rel);
     if (previous != enabled) {
-        ESP_LOGI(TAG, "Dynamic Loudness: %s (session only)", enabled ? "ON" : "OFF");
+        ESP_LOGI(TAG, "Dynamic Loudness: %s", enabled ? "ON" : "OFF");
     }
     return ESP_OK;
 }
@@ -2323,7 +2323,7 @@ esp_err_t dsp_engine_save_character(void)
 
 
 /* ============================================================
- * Optional HF refinement controls (runtime only; never persisted)
+ * Optional HF refinement controls (persisted per preset by dsp_api)
  * ============================================================ */
 
 esp_err_t dsp_engine_set_character_hf(
@@ -2393,6 +2393,19 @@ esp_err_t dsp_engine_set_character_diagnostics(uint8_t stage_mask,
             &s_character_diag_stage_max_us[stage], 0, memory_order_relaxed);
     }
 
+    return ESP_OK;
+}
+
+esp_err_t dsp_engine_get_character_diagnostic_masks(uint8_t *stage_mask,
+                                                     uint8_t *feature_mask)
+{
+    if (!stage_mask || !feature_mask)
+        return ESP_ERR_INVALID_ARG;
+
+    *stage_mask = (uint8_t)atomic_load_explicit(
+        &s_character_diag_stage_mask, memory_order_acquire);
+    *feature_mask = (uint8_t)atomic_load_explicit(
+        &s_character_diag_feature_mask, memory_order_acquire);
     return ESP_OK;
 }
 
