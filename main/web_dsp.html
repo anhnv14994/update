@@ -706,7 +706,7 @@ input[type=range]::-moz-range-thumb{
         <div class="feature-text"><div class="feature-name">Low-volume compensation</div><div class="feature-info">Bù nhẹ bass và air khi volume AirPlay thấp; OFF mặc định để giữ đáp tuyến phẳng.</div></div>
         <label class="switch"><input type="checkbox" id="dynamicLoudnessEnabled"><span class="slider-toggle"></span></label>
       </div>
-      <div class="peq-subtitle">Mốc tham chiếu 0.5× volume. Tối đa +3 dB vùng thấp quanh 110 Hz và +1 dB dải cao trên 9 kHz; thời gian chuyển 50 ms. Không lưu NVS.</div>
+      <div class="peq-subtitle">Mốc tương đối −6 dB theo AirPlay volume × master preset (không phải hiệu chuẩn SPL). Tối đa +3 dB vùng thấp quanh 110 Hz và +1 dB dải cao trên 9 kHz; chuyển 50 ms. OFF mặc định, không lưu NVS.</div>
 
       <div class="character-diag-title">Processing time · µs per 352-sample frame</div>
       <div class="peq-subtitle">Cycle-counter elapsed time; may include scheduler preemption, so compare relative stage cost.</div>
@@ -732,8 +732,7 @@ input[type=range]::-moz-range-thumb{
 
     <div class="peq-subtitle">
       10-band PEQ của preset đang chọn. Hover vào tần số để xem vai trò của từng vùng.
-      Factory B&O V6.7 đã giảm presence/air; preset đã lưu trong NVS được giữ nguyên.
-      Dùng Reset preset mới áp dụng bộ factory mới.
+      Factory preset được giữ nguyên; V6.7 không ghi đè EQ đã lưu trong NVS.
     </div>
 
     <div id="bands"></div>
