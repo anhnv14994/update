@@ -1,20 +1,65 @@
 #include "i2s_output.h"
+
+#include <math.h>
+#include <stdatomic.h>
+#include <stdint.h>
+
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 
 static const char *TAG = "i2s_output";
-static float current_volume = 1.0f;
-static int16_t *volume_buffer = NULL;
-static size_t volume_buffer_size = 0;
+
+#define I2S_VOLUME_BUFFER_SAMPLES 1024U /* 512 stereo frames / 2048 bytes */
+#define I2S_VOLUME_RAMP_ALPHA    0.002830453811f /* 8 ms time constant at 44.1 kHz */
+
+static _Atomic uint32_t target_volume_q = 50000U; /* RAOP startup default: 0.05 */
+static float current_volume = 0.05f;             /* Owned by the I2S output task. */
+static int16_t volume_buffer[I2S_VOLUME_BUFFER_SAMPLES];
+static uint32_t dither_rng = 0x6D2B79F5U;
 
 static i2s_chan_handle_t tx_handle = NULL;
 
+static inline float dither_uniform(void)
+{
+    dither_rng = dither_rng * 1664525U + 1013904223U;
+    return (float)(dither_rng >> 8) * (1.0f / 16777216.0f);
+}
+
+static inline int16_t scale_and_quantize(int16_t sample, float volume)
+{
+    if (sample == 0 || volume <= 0.0f)
+        return 0;
+
+    float scaled = (float)sample * volume;
+
+    /* TPDF dither of +/- 1 LSB at the final PCM16 conversion. */
+    if (volume < 0.999999f)
+        scaled += dither_uniform() - dither_uniform();
+
+    if (scaled > 32767.0f)
+        scaled = 32767.0f;
+    else if (scaled < -32768.0f)
+        scaled = -32768.0f;
+
+    const int32_t rounded = (int32_t)(
+        scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
+    return (int16_t)rounded;
+}
+
 void i2s_output_set_volume(float volume)
 {
-    current_volume = (volume < 0.0f) ? 0.0f : (volume > 1.0f) ? 1.0f : volume;
-    ESP_LOGI(TAG, "Volume set to %.2f (%d%%)", current_volume, (int)(current_volume * 100));
+    if (!isfinite(volume))
+        return;
+
+    if (volume < 0.0f)
+        volume = 0.0f;
+    else if (volume > 1.0f)
+        volume = 1.0f;
+
+    const uint32_t q = (uint32_t)(volume * 1000000.0f + 0.5f);
+    atomic_store_explicit(&target_volume_q, q, memory_order_release);
 }
 
 void i2s_output_init(int bck_pin, int ws_pin, int dout_pin)
@@ -24,9 +69,9 @@ void i2s_output_init(int bck_pin, int ws_pin, int dout_pin)
     ESP_LOGI(TAG, "Initializing I2S with pins - BCK: %d, WS: %d, DOUT: %d",
              bck_pin, ws_pin, dout_pin);
 
-    // Configure I2S channel
-    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    chan_cfg.auto_clear = true; // Auto clear DMA buffer on underflow
+    i2s_chan_config_t chan_cfg =
+        I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    chan_cfg.auto_clear = true;
 
     ret = i2s_new_channel(&chan_cfg, &tx_handle, NULL);
     if (ret != ESP_OK) {
@@ -34,14 +79,14 @@ void i2s_output_init(int bck_pin, int ws_pin, int dout_pin)
         return;
     }
 
-    // Configure I2S standard mode (Philips standard)
     i2s_std_config_t std_cfg = {
         .clk_cfg = {
             .sample_rate_hz = 44100,
             .clk_src = I2S_CLK_SRC_XTAL,
             .mclk_multiple = I2S_MCLK_MULTIPLE_256,
         },
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
+            I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
             .bclk = bck_pin,
@@ -58,7 +103,8 @@ void i2s_output_init(int bck_pin, int ws_pin, int dout_pin)
 
     ret = i2s_channel_init_std_mode(tx_handle, &std_cfg);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize I2S standard mode: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to initialize I2S standard mode: %s",
+                 esp_err_to_name(ret));
         i2s_del_channel(tx_handle);
         tx_handle = NULL;
         return;
@@ -72,59 +118,73 @@ void i2s_output_init(int bck_pin, int ws_pin, int dout_pin)
         return;
     }
 
-    ESP_LOGI(TAG, "I2S initialized successfully");
+    ESP_LOGI(TAG, "I2S initialized successfully; final volume stage enabled");
 }
 
 void i2s_output_write(const uint8_t *data, size_t len)
 {
-
     if (!tx_handle) {
         ESP_LOGW(TAG, "I2S not initialized");
         return;
     }
+    if (!data || len == 0 || (len & 0x01U) != 0) {
+        ESP_LOGW(TAG, "Invalid I2S PCM buffer: %u bytes", (unsigned)len);
+        return;
+    }
 
-    // Ensure buffer is large enough (allocate once, reuse)
-    if (volume_buffer_size < len) {
-        if (volume_buffer) free(volume_buffer);
-        volume_buffer = malloc(len);
-        if (!volume_buffer) {
-            ESP_LOGE(TAG, "Failed to allocate volume buffer");
+    const int16_t *samples = (const int16_t *)data;
+    const size_t sample_count = len / sizeof(int16_t);
+    const float target_volume = (float)atomic_load_explicit(
+        &target_volume_q, memory_order_acquire) * 0.000001f;
+
+    /* Exact unity bypass: no copy, no dither, no extra arithmetic. */
+    if (target_volume >= 0.999999f && current_volume >= 0.999999f) {
+        current_volume = 1.0f;
+        size_t bytes_written = 0;
+        const esp_err_t ret = i2s_channel_write(
+            tx_handle, data, len, &bytes_written, portMAX_DELAY);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));
+        } else if (bytes_written != len) {
+            ESP_LOGW(TAG, "I2S partial write: %u/%u bytes",
+                     (unsigned)bytes_written, (unsigned)len);
+        }
+        return;
+    }
+
+    size_t offset = 0;
+    while (offset < sample_count) {
+        size_t chunk_samples = sample_count - offset;
+        if (chunk_samples > I2S_VOLUME_BUFFER_SAMPLES)
+            chunk_samples = I2S_VOLUME_BUFFER_SAMPLES;
+
+        for (size_t i = 0; i < chunk_samples; ++i) {
+            current_volume += I2S_VOLUME_RAMP_ALPHA *
+                (target_volume - current_volume);
+            volume_buffer[i] = scale_and_quantize(
+                samples[offset + i], current_volume);
+        }
+
+        if (fabsf(target_volume - current_volume) < 1.0e-7f)
+            current_volume = target_volume;
+
+        const size_t chunk_bytes = chunk_samples * sizeof(int16_t);
+        size_t bytes_written = 0;
+        const esp_err_t ret = i2s_channel_write(
+            tx_handle, volume_buffer, chunk_bytes,
+            &bytes_written, portMAX_DELAY);
+
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));
             return;
         }
-        volume_buffer_size = len;
-    }
-
-    const uint8_t *output_data;
-
-    // Skip scaling if at full volume
-    if (current_volume >= 0.99f) {
-        output_data = data;
-    } else {
-        // Apply volume scaling
-        int16_t *samples = (int16_t *)data;
-        size_t sample_count = len / sizeof(int16_t);
-
-        for (size_t i = 0; i < sample_count; i++) {
-            int32_t scaled_sample = (int32_t)(samples[i] * current_volume);
-            if (scaled_sample > 32767) scaled_sample = 32767;
-            if (scaled_sample < -32768) scaled_sample = -32768;
-            volume_buffer[i] = (int16_t)scaled_sample;
+        if (bytes_written != chunk_bytes) {
+            ESP_LOGW(TAG, "I2S partial write: %u/%u bytes",
+                     (unsigned)bytes_written, (unsigned)chunk_bytes);
+            return;
         }
-        output_data = (uint8_t *)volume_buffer;
-    }
 
-    // if (call_count++ % 100 == 0) {
-    //     ESP_LOGI(TAG, "Writing %zu bytes to I2S (call #%lu)",
-    //              len, call_count);
-    // }
-
-    size_t bytes_written = 0;
-    esp_err_t ret = i2s_channel_write(tx_handle, output_data, len, &bytes_written, portMAX_DELAY);
-
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));
-    } else if (bytes_written != len) {
-        ESP_LOGW(TAG, "I2S partial write: %d/%d bytes", bytes_written, len);
+        offset += chunk_samples;
     }
 }
 
