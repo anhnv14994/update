@@ -34,6 +34,7 @@ typedef struct {
 typedef struct {
     uint32_t magic;
     uint16_t version;
+    uint8_t dsp_enabled;
     uint8_t hf_a_enabled;
     uint8_t hf_b_enabled;
     uint8_t hf_a_strength_pct;
@@ -200,6 +201,7 @@ static esp_err_t apply_preset_options(dsp_preset_id_t id)
 
     if (blob.magic != DSP_OPTIONS_MAGIC ||
         blob.version != DSP_OPTIONS_VERSION ||
+        blob.dsp_enabled > 1U ||
         blob.hf_a_enabled > 1U || blob.hf_b_enabled > 1U ||
         blob.hf_a_strength_pct > 100U || blob.hf_b_strength_pct > 100U ||
         blob.dynamic_loudness_enabled > 1U ||
@@ -244,9 +246,15 @@ static esp_err_t apply_preset_options(dsp_preset_id_t id)
         stereo_spatial_set_config(g_stereo_ctx, &cfg);
     }
 
+    if (dsp_engine_get_enabled() != (blob.dsp_enabled != 0U)) {
+        err = dsp_engine_set_enabled(blob.dsp_enabled != 0U);
+        if (err != ESP_OK)
+            return err;
+    }
+
     ESP_LOGI(TAG,
-             "Preset %d loaded: Character=%u HF=%u/%u Loudness=%u Spatial=%u A/B=%u/%u",
-             (int)id, blob.character.enabled ? 1U : 0U,
+             "Preset %d loaded: DSP=%u Character=%u HF=%u/%u Loudness=%u Spatial=%u A/B=%u/%u",
+             (int)id, blob.dsp_enabled, blob.character.enabled ? 1U : 0U,
              blob.hf_a_enabled, blob.hf_b_enabled,
              blob.dynamic_loudness_enabled, blob.spatial_mode,
              blob.character_stage_mask, blob.character_feature_mask);
@@ -262,6 +270,7 @@ static esp_err_t save_preset_options(dsp_preset_id_t id)
     memset(&blob, 0, sizeof(blob));
     blob.magic = DSP_OPTIONS_MAGIC;
     blob.version = DSP_OPTIONS_VERSION;
+    blob.dsp_enabled = dsp_engine_get_enabled() ? 1U : 0U;
 
     esp_err_t err = dsp_engine_get_character(&blob.character);
     if (err != ESP_OK)
@@ -308,8 +317,8 @@ static esp_err_t save_preset_options(dsp_preset_id_t id)
 
     if (err == ESP_OK) {
         ESP_LOGI(TAG,
-                 "Preset %d saved: Character=%u HF=%u/%u Loudness=%u Spatial=%u A/B=%u/%u",
-                 (int)id, blob.character.enabled ? 1U : 0U,
+                 "Preset %d saved: DSP=%u Character=%u HF=%u/%u Loudness=%u Spatial=%u A/B=%u/%u",
+                 (int)id, blob.dsp_enabled, blob.character.enabled ? 1U : 0U,
                  blob.hf_a_enabled, blob.hf_b_enabled,
                  blob.dynamic_loudness_enabled, blob.spatial_mode,
                  blob.character_stage_mask, blob.character_feature_mask);
@@ -326,6 +335,7 @@ static esp_err_t reset_preset_options(dsp_preset_id_t id)
     memset(&blob, 0, sizeof(blob));
     blob.magic = DSP_OPTIONS_MAGIC;
     blob.version = DSP_OPTIONS_VERSION;
+    blob.dsp_enabled = 1U;
     blob.character.mode = DSP_CHARACTER_CUSTOM;
     blob.character_stage_mask = DSP_CHARACTER_STAGE_MASK_ALL;
     blob.character_feature_mask = DSP_CHARACTER_FEATURE_MASK_ALL;
