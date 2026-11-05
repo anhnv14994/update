@@ -526,7 +526,7 @@ input[type=range]::-moz-range-thumb{
   <div class="titlebar">
     DSP <span>SOUND</span>
     <div style="font-size:9px;letter-spacing:1.5px;color:#e0b155;margin-top:6px;">
-      V6.6.1 · HF REFINEMENT A/B · SUBSONIC HPF 30 HZ / 24 DB/OCT
+      V6.7 · FLOAT VOLUME · CHARACTER REFINEMENT · SUBSONIC HPF 30 HZ / 24 DB/OCT
     </div>
   </div>
 
@@ -658,11 +658,11 @@ input[type=range]::-moz-range-thumb{
 
       <div class="character-diag-title">Nonlinear stages</div>
       <div class="feature">
-        <div class="feature-text"><div class="feature-name">Stage 1 · Low-mid body</div><div class="feature-info">90–650 Hz</div></div>
+        <div class="feature-text"><div class="feature-name">Stage 1 · Low-mid body</div><div class="feature-info">80–320 Hz · harmonic body</div></div>
         <label class="switch"><input type="checkbox" id="charStage1" checked><span class="slider-toggle"></span></label>
       </div>
       <div class="feature">
-        <div class="feature-text"><div class="feature-name">Stage 2 · Vocal core</div><div class="feature-info">320 Hz–2.1 kHz</div></div>
+        <div class="feature-text"><div class="feature-name">Stage 2 · Vocal core</div><div class="feature-info">250 Hz–1.4 kHz · vocal core</div></div>
         <label class="switch"><input type="checkbox" id="charStage2" checked><span class="slider-toggle"></span></label>
       </div>
 
@@ -691,7 +691,7 @@ input[type=range]::-moz-range-thumb{
         <div class="peq-subtitle">0–100% · transient lift tối đa +0.8 dB</div>
       </div>
       <div class="feature">
-        <div class="feature-text"><div class="feature-name">HF B · Micro-transient / 5–10 kHz</div><div class="feature-info">Giữ độ bật của cymbal/tiếng gõ, chỉ tác động lúc có attack; hạn chế nhấn hiss kéo dài.</div></div>
+        <div class="feature-text"><div class="feature-name">HF B · Micro-transient / 5–10 kHz</div><div class="feature-info">Giữ attack cymbal/tiếng gõ; guard giảm nhẹ khi năng lượng 5–10 kHz áp đảo 2–5 kHz, không phải bộ nhận diện âm xì tuyệt đối.</div></div>
         <label class="switch"><input type="checkbox" id="characterHfBEnabled"><span class="slider-toggle"></span></label>
       </div>
       <div class="band">
@@ -699,13 +699,21 @@ input[type=range]::-moz-range-thumb{
         <input type="range" min="0" max="100" step="1" value="0" id="characterHfBStrength">
         <div class="peq-subtitle">0–100% · transient lift tối đa +0.5 dB</div>
       </div>
-      <div class="peq-subtitle">A/B độc lập, mặc định OFF + 0%, chỉ lưu trong phiên chạy, không ghi NVS. Mix ramp 8 ms để tránh click.</div>
+      <div class="peq-subtitle">A/B độc lập, mặc định OFF + 0%, chỉ lưu trong phiên chạy. HF B có spectral guard nhẹ; Mix ramp 8 ms.</div>
 
-      <div class="character-diag-title">Stage processing time · µs per 352-sample frame</div>
+      <div class="character-diag-title">Dynamic Loudness · session only</div>
+      <div class="feature">
+        <div class="feature-text"><div class="feature-name">Low-volume compensation</div><div class="feature-info">Bù nhẹ bass và air khi volume AirPlay thấp; OFF mặc định để giữ đáp tuyến phẳng.</div></div>
+        <label class="switch"><input type="checkbox" id="dynamicLoudnessEnabled"><span class="slider-toggle"></span></label>
+      </div>
+      <div class="peq-subtitle">Mốc tham chiếu 0.5× volume. Tối đa +3 dB vùng thấp quanh 110 Hz và +1 dB dải cao trên 9 kHz; thời gian chuyển 50 ms. Không lưu NVS.</div>
+
+      <div class="character-diag-title">Processing time · µs per 352-sample frame</div>
       <div class="peq-subtitle">Cycle-counter elapsed time; may include scheduler preemption, so compare relative stage cost.</div>
       <div class="exciter-note">
-        Stage 1: <strong id="charStage1Stats">0 / 0 µs</strong><br>
-        Stage 2: <strong id="charStage2Stats">0 / 0 µs</strong><br>
+        Character Stage 1: <strong id="charStage1Stats">0 / 0 µs</strong><br>
+        Character Stage 2: <strong id="charStage2Stats">0 / 0 µs</strong><br>
+        HF A/B: <strong id="charHfStats">0 / 0 µs</strong><br>
         <span id="charDiagBlocks">0 measured frames</span>
       </div>
 
@@ -1618,6 +1626,8 @@ function renderCharacter(){
     !!c.dynamic_saturation_enabled;
   document.getElementById("characterHfAEnabled").checked = !!c.hf_a_enabled;
   document.getElementById("characterHfBEnabled").checked = !!c.hf_b_enabled;
+  document.getElementById("dynamicLoudnessEnabled").checked =
+    !!(state && state.dynamic_loudness_enabled);
   const hfAStrength = Math.max(0, Math.min(100, Number(c.hf_a_strength_pct ?? 0)));
   const hfBStrength = Math.max(0, Math.min(100, Number(c.hf_b_strength_pct ?? 0)));
   document.getElementById("characterHfAStrength").value = hfAStrength;
@@ -1751,6 +1761,18 @@ function scheduleCharacterHFUpdate(){
   });
 });
 
+document.getElementById("dynamicLoudnessEnabled").addEventListener("change", async e => {
+  try {
+    state = await api("/api/dsp/loudness", {enabled: e.target.checked});
+    renderCharacter();
+    setStatus("Dynamic Loudness " + (e.target.checked ? "ON" : "OFF"));
+  } catch (err) {
+    console.error(err);
+    setStatus("Không thể cập nhật Dynamic Loudness");
+    await refresh();
+  }
+});
+
 
 /* =========================================================
    ANALOG CHARACTER DIAGNOSTICS
@@ -1782,6 +1804,8 @@ function renderCharacterDiagnostics(d){
     `${Number(avg[0] || 0)} / ${Number(max[0] || 0)} µs avg / max`;
   document.getElementById("charStage2Stats").textContent =
     `${Number(avg[1] || 0)} / ${Number(max[1] || 0)} µs avg / max`;
+  document.getElementById("charHfStats").textContent =
+    `${Number(avg[2] || 0)} / ${Number(max[2] || 0)} µs avg / max`;
   document.getElementById("charDiagBlocks").textContent =
     `${Number(d.blocks || 0)} measured audio frames · ${Number(d.cpu_mhz || 0)} MHz`;
 
