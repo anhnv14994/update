@@ -2368,7 +2368,7 @@ esp_err_t dsp_engine_get_character_hf(
 
 
 /* ============================================================
- * Character diagnostics (runtime only; never persisted)
+ * Per-preset A/B masks; processing-time counters remain runtime-only
  * ============================================================ */
 
 esp_err_t dsp_engine_set_character_diagnostics(uint8_t stage_mask,
