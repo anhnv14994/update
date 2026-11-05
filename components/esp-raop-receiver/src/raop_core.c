@@ -10,8 +10,6 @@
 #include <stdarg.h>
 
 static const char *TAG = "raop_core";
-#define MAX_FRAME_SIZE 2048
-
 // The opaque handle consumers get back from raop_init()
 struct raop_handle_s {
     struct raop_ctx_s *raop_ctx;
@@ -186,30 +184,11 @@ static bool internal_cmd_cb(raop_internal_event_t event, ...) {
 // ---- Single instance support ----
 raop_handle_t *s_handle = NULL;
 
-static void apply_software_volume(const uint8_t *data, size_t len, uint8_t *out, float volume) {
-    const int16_t *samples = (const int16_t *)data;
-    int16_t *out_samples = (int16_t *)out;
-    size_t count = len / sizeof(int16_t);
-    for (size_t i = 0; i < count; i++) {
-        int32_t scaled = (int32_t)(samples[i] * volume);
-        if (scaled > 32767) scaled = 32767;
-        if (scaled < -32768) scaled = -32768;
-        out_samples[i] = (int16_t)scaled;
-    }
-}
-
 static void internal_data_cb(const uint8_t *data, size_t len, uint32_t playtime) {
-    if (s_handle && s_handle->config.volume_mode == RAOP_VOLUME_SOFTWARE
-            && s_handle->volume < 0.99f) {
-        static uint8_t scaled[MAX_FRAME_SIZE];
-        apply_software_volume(data, len, scaled, s_handle->volume);
-        if (!audio_buffer_write(scaled, len, playtime)) {
-            ESP_LOGW(TAG, "Failed to buffer audio frame");
-        }
-    } else {
-        if (!audio_buffer_write(data, len, playtime)) {
-            ESP_LOGW(TAG, "Failed to buffer audio frame");
-        }
+    /* Always buffer full-scale decoded PCM. Volume is applied by DSP in float
+     * after Character/PEQ, avoiding a second PCM16 quantization before DSP. */
+    if (!audio_buffer_write(data, len, playtime)) {
+        ESP_LOGW(TAG, "Failed to buffer audio frame");
     }
 }
 
@@ -229,6 +208,10 @@ esp_err_t raop_init(const raop_config_t *config, raop_handle_t **out_handle) {
     // Copy config
     memcpy(&handle->config, config, sizeof(raop_config_t));
     handle->volume = 0.05f;
+    if (handle->config.volume_mode == RAOP_VOLUME_HARDWARE &&
+        handle->config.volume_cb) {
+        handle->config.volume_cb(handle->volume, handle->config.user_ctx);
+    }
 
     // Resolve device name
     uint8_t mac[6];
