@@ -161,6 +161,9 @@ void i2s_output_write(const uint8_t *data, size_t len)
         for (size_t i = 0; i < chunk_samples; ++i) {
             current_volume += I2S_VOLUME_RAMP_ALPHA *
                 (target_volume - current_volume);
+            /* Finish a mute ramp cleanly; never leave a dither-only noise tail. */
+            if (target_volume <= 0.0f && current_volume < 0.0001f)
+                current_volume = 0.0f;
             volume_buffer[i] = scale_and_quantize(
                 samples[offset + i], current_volume);
         }
