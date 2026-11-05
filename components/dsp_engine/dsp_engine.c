@@ -1657,7 +1657,8 @@ bool dsp_engine_get_enabled(void)
 
 
 /* ============================================================
- * Post-Character AirPlay volume + Dynamic Loudness
+ * AirPlay volume reference + Dynamic Loudness
+ * Actual volume gain is applied after Stereo Spatial in i2s_output.
  * ============================================================ */
 
 esp_err_t dsp_engine_set_output_volume(float volume)
@@ -2508,7 +2509,7 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
      * This is not SPL calibration; the feature remains OFF by default. */
     float target_loudness_bass = 1.0f;
     float target_loudness_treble = 1.0f;
-    if (dynamic_loudness_requested) {
+    if (dynamic_loudness_requested && target_output_volume > 0.0001f) {
         const float effective_gain = fmaxf(
             target_output_volume * master_linear, 0.001f);
         const float effective_gain_db = 20.0f * log10f(effective_gain);
