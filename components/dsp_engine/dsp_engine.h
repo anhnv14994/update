@@ -83,6 +83,8 @@ typedef struct {
 esp_err_t dsp_engine_set_character_diagnostics(uint8_t stage_mask,
                                                uint8_t feature_mask);
 esp_err_t dsp_engine_get_character_diagnostics(dsp_character_diagnostics_t *out);
+esp_err_t dsp_engine_get_character_diagnostic_masks(uint8_t *stage_mask,
+                                                     uint8_t *feature_mask);
 
 /* ============================================================
  * Analog Character Engine V5.1 Lite
@@ -148,7 +150,7 @@ bool      dsp_engine_get_enabled(void);
 esp_err_t dsp_engine_set_output_volume(float volume);
 float     dsp_engine_get_output_volume(void);
 
-/* Session-only low-volume compensation; OFF by default. */
+/* Low-volume compensation; state is stored with the selected preset. OFF by default. */
 esp_err_t dsp_engine_set_dynamic_loudness(bool enabled);
 bool      dsp_engine_get_dynamic_loudness(void);
 
@@ -200,7 +202,7 @@ esp_err_t dsp_engine_get_character(dsp_character_t *out);
 esp_err_t dsp_engine_set_character_profile(dsp_character_mode_t mode);
 esp_err_t dsp_engine_save_character(void);
 
-/* Session-only high-frequency refinement controls; never stored in NVS. */
+/* High-frequency refinement controls; stored with the selected preset by dsp_api. */
 esp_err_t dsp_engine_set_character_hf(
     bool a_enabled, bool b_enabled, uint8_t a_strength_pct, uint8_t b_strength_pct);
 esp_err_t dsp_engine_get_character_hf(
