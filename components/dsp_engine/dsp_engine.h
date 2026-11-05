@@ -192,9 +192,11 @@ esp_err_t dsp_engine_get_character(dsp_character_t *out);
 esp_err_t dsp_engine_set_character_profile(dsp_character_mode_t mode);
 esp_err_t dsp_engine_save_character(void);
 
-/* Session-only high-frequency refinement switches; never stored in NVS. */
-esp_err_t dsp_engine_set_character_hf(bool a_enabled, bool b_enabled);
-esp_err_t dsp_engine_get_character_hf(bool *a_enabled, bool *b_enabled);
+/* Session-only high-frequency refinement controls; never stored in NVS. */
+esp_err_t dsp_engine_set_character_hf(
+    bool a_enabled, bool b_enabled, uint8_t a_strength_pct, uint8_t b_strength_pct);
+esp_err_t dsp_engine_get_character_hf(
+    bool *a_enabled, bool *b_enabled, uint8_t *a_strength_pct, uint8_t *b_strength_pct);
 
 #ifdef __cplusplus
 }
