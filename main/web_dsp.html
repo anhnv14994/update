@@ -526,7 +526,7 @@ input[type=range]::-moz-range-thumb{
   <div class="titlebar">
     DSP <span>SOUND</span>
     <div style="font-size:9px;letter-spacing:1.5px;color:#e0b155;margin-top:6px;">
-      V6.5 · SUBSONIC HPF 30 HZ / 24 DB/OCT · ALWAYS ON
+      V6.6 · HF REFINEMENT A/B · SUBSONIC HPF 30 HZ / 24 DB/OCT
     </div>
   </div>
 
@@ -679,6 +679,17 @@ input[type=range]::-moz-range-thumb{
         <div class="feature-text"><div class="feature-name">Drive</div><div class="feature-info">Harmonic drive multiplier · OFF = unity</div></div>
         <label class="switch"><input type="checkbox" id="charFeatDrive" checked><span class="slider-toggle"></span></label>
       </div>
+
+      <div class="character-diag-title">High-frequency refinement · session only</div>
+      <div class="feature">
+        <div class="feature-text"><div class="feature-name">HF A · Presence / 2–5 kHz</div><div class="feature-info">Cubic H3 refinement rất nhẹ, tăng articulation vùng guitar/piano/vocal.</div></div>
+        <label class="switch"><input type="checkbox" id="characterHfAEnabled"><span class="slider-toggle"></span></label>
+      </div>
+      <div class="feature">
+        <div class="feature-text"><div class="feature-name">HF B · Transient / 5–10 kHz</div><div class="feature-info">Nhấn transient rất nhẹ cho cymbal và tiếng gõ; không boost shelf cố định.</div></div>
+        <label class="switch"><input type="checkbox" id="characterHfBEnabled"><span class="slider-toggle"></span></label>
+      </div>
+      <div class="peq-subtitle">A và B độc lập, mặc định OFF, không lưu NVS. Chỉ hoạt động khi DSP tổng đang ON.</div>
 
       <div class="character-diag-title">Stage processing time · µs per 352-sample frame</div>
       <div class="peq-subtitle">Cycle-counter elapsed time; may include scheduler preemption, so compare relative stage cost.</div>
@@ -1595,6 +1606,8 @@ function renderCharacter(){
     !!c.harmonic_interaction_enabled;
   document.getElementById("characterDynamicEnabled").checked =
     !!c.dynamic_saturation_enabled;
+  document.getElementById("characterHfAEnabled").checked = !!c.hf_a_enabled;
+  document.getElementById("characterHfBEnabled").checked = !!c.hf_b_enabled;
 
   const mode = Number(c.mode ?? 0);
   document.getElementById("characterTube").classList.toggle("active", mode === 1);
@@ -1668,6 +1681,24 @@ characterControls.concat(characterModifierControls).forEach(([inputId, key, valu
 
 ["characterInteractionEnabled", "characterDynamicEnabled"].forEach(id => {
   document.getElementById(id).addEventListener("change", updateCharacter);
+});
+
+[ ["characterHfAEnabled", "hf_a_enabled", "HF A · Presence"],
+  ["characterHfBEnabled", "hf_b_enabled", "HF B · Transient"]
+].forEach(([id, key, label]) => {
+  document.getElementById(id).addEventListener("change", async e => {
+    const payload = {};
+    payload[key] = e.target.checked;
+    try{
+      state = await api("/api/dsp/character", payload);
+      renderCharacter();
+      setStatus(`${label} ${e.target.checked ? "ON" : "OFF"}`);
+    }catch(err){
+      console.error(err);
+      setStatus(`Không thể bật/tắt ${label}`);
+      await refresh();
+    }
+  });
 });
 
 
