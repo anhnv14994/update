@@ -684,9 +684,9 @@ static esp_err_t api_character_handler(httpd_req_t *req)
     const bool hf_a_value = update_hf_a && cJSON_IsTrue(hf_a_item);
     const bool hf_b_value = update_hf_b && cJSON_IsTrue(hf_b_item);
     const uint8_t hf_a_strength_value = update_hf_a_strength
-        ? (uint8_t)lround(hf_a_strength_item->valuedouble) : 0U;
+        ? (uint8_t)(hf_a_strength_item->valuedouble + 0.5) : 0U;
     const uint8_t hf_b_strength_value = update_hf_b_strength
-        ? (uint8_t)lround(hf_b_strength_item->valuedouble) : 0U;
+        ? (uint8_t)(hf_b_strength_item->valuedouble + 0.5) : 0U;
 
     cJSON_Delete(body);
 
