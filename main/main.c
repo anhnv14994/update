@@ -29,11 +29,10 @@ static httpd_handle_t web_server = NULL;
 static raop_handle_t *raop_handle = NULL;
 static struct udp_pcb *dns_pcb = NULL;
 
-// Audio output callback - runs DSP (PEQ + shelf + Analog Character + subsonic HPF + master),
-// then Stereo Spatial (frequency-dependent M/S widening), then forwards to
-// I2S hardware exactly as before. The AirPlay/ALAC/buffer pipeline that
-// calls this is untouched; when both stages are disabled, each hands back
-// the previous buffer unmodified (zero-copy bypass all the way through).
+// PCM tap runs PEQ + Analog Character + subsonic HPF + post-Character float
+// volume/master in the DSP task. Stereo Spatial then runs before I2S output.
+// RAOP now buffers decoded full-scale PCM so AirPlay volume does not quantize
+// the signal before Character processing.
 stereo_spatial_ctx_t *g_stereo_ctx = NULL;
 
 
