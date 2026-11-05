@@ -869,6 +869,7 @@ static void reset_character_states(void)
 {
     memset(&s_character_state, 0, sizeof(s_character_state));
     memset(s_character_residual_hpf, 0, sizeof(s_character_residual_hpf));
+    memset(&s_character_hf_state, 0, sizeof(s_character_hf_state));
     s_character_active_stage_mask = 0;
 }
 
@@ -2421,6 +2422,8 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
     if (!enabled) {
         if (s_character_state.running)
             reset_character_states();
+        else if (s_character_hf_state.history_active)
+            memset(&s_character_hf_state, 0, sizeof(s_character_hf_state));
 
         /*
          * Keep the fixed subsonic protection active even when the user
