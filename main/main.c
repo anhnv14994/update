@@ -53,23 +53,6 @@ static void dsp_pcm_callback(
     }
 }
 
-// static void audio_output_callback(const uint8_t *data, size_t len, void *user_data)
-// {
-//     // 1. Process PEQ / DSP Engine
-//     size_t peq_len = len;
-//     const uint8_t *peq_out = dsp_engine_process(data, len, &peq_len);
-
-//     // 2. Process Stereo Spatial v2 (In-place processing)
-//     if (g_stereo_ctx && peq_out) {
-//         // Stereo 16-bit = 4 bytes/frame -> frames = peq_len / 4
-//         size_t frames = peq_len / (sizeof(int16_t) * 2);
-//         stereo_spatial_process_i16(g_stereo_ctx, (int16_t *)(uintptr_t)peq_out, frames);
-//     }
-
-//     // 3. Xuất ra I2S
-//     i2s_output_write(peq_out, peq_len);
-// }
-
 static void audio_output_callback(const uint8_t *data, size_t len, void *user_data)
 {
     // Dữ liệu 'data' đã được dsp_pcm_callback xử lý hoàn tất tại audio_dsp_task
