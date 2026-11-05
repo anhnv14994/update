@@ -86,6 +86,12 @@ static void audio_output_callback(const uint8_t *data, size_t len, void *user_da
     i2s_output_write(data, out_len);
 }
 
+static void raop_volume_callback(float volume, void *user_ctx)
+{
+    (void)user_ctx;
+    (void)dsp_engine_set_output_volume(volume);
+}
+
 static void raop_event_handler(raop_event_t event, void *event_data, void *user_ctx)
 {
     switch (event) {
@@ -156,10 +162,11 @@ static void start_airplay_receiver(const app_config_t *app_config)
 
     raop_config_t config = {
         .device_name     = app_config->device_name,
-        .volume_mode     = RAOP_VOLUME_SOFTWARE,
+        .volume_mode     = RAOP_VOLUME_HARDWARE,
         .mdns_mode       = RAOP_MDNS_MANAGED,
         .audio_output_cb = audio_output_callback,
         .event_cb        = raop_event_handler,
+        .volume_cb       = raop_volume_callback,
         .pcm_tap_cb      = dsp_pcm_callback,
     };
 
