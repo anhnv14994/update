@@ -1588,8 +1588,8 @@ static esp_err_t api_master_handler(
 // ---------------------------------------------------------------------------
 // SAVE
 //
-// Save PEQ, Analog Character, HF A/B, Dynamic Loudness, Stereo Spatial
-// and the A/B processing masks as one complete preset snapshot.
+// Save DSP bypass, PEQ, master gain, Analog Character, HF A/B,
+// Dynamic Loudness, Stereo Spatial and Character A/B masks as one snapshot.
 // ---------------------------------------------------------------------------
 
 static esp_err_t api_save_handler(
