@@ -2903,7 +2903,7 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
             hf->mix_a += character_filters.hf_mix_alpha * (target_a - hf->mix_a);
             hf->mix_b += character_filters.hf_mix_alpha * (target_b - hf->mix_b);
 
-            const bool hf_active = character_hf_a_requested || character_hf_b_requested ||
+            const bool hf_active = target_a > 0.00001f || target_b > 0.00001f ||
                 hf->mix_a > 0.00001f || hf->mix_b > 0.00001f;
 
             if (hf_active) {
