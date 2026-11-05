@@ -12,7 +12,7 @@
 static const char *TAG = "i2s_output";
 
 #define I2S_VOLUME_BUFFER_SAMPLES 1024U /* 512 stereo frames / 2048 bytes */
-#define I2S_VOLUME_RAMP_ALPHA    0.002830453811f /* 8 ms time constant at 44.1 kHz */
+#define I2S_VOLUME_RAMP_ALPHA    0.002830453811f /* 8 ms at 44.1 kHz, once per frame */
 
 static _Atomic uint32_t target_volume_q = 50000U; /* RAOP startup default: 0.05 */
 static float current_volume = 0.05f;             /* Owned by the I2S output task. */
@@ -133,7 +133,7 @@ void i2s_output_write(const uint8_t *data, size_t len)
     }
 
     const int16_t *samples = (const int16_t *)data;
-    const size_t sample_count = len / sizeof(int16_t);
+    const size_t frame_count = len / (2U * sizeof(int16_t));
     const float target_volume = (float)atomic_load_explicit(
         &target_volume_q, memory_order_acquire) * 0.000001f;
 
@@ -152,25 +152,31 @@ void i2s_output_write(const uint8_t *data, size_t len)
         return;
     }
 
-    size_t offset = 0;
-    while (offset < sample_count) {
-        size_t chunk_samples = sample_count - offset;
-        if (chunk_samples > I2S_VOLUME_BUFFER_SAMPLES)
-            chunk_samples = I2S_VOLUME_BUFFER_SAMPLES;
+    size_t frame_offset = 0;
+    const size_t chunk_frames_max = I2S_VOLUME_BUFFER_SAMPLES / 2U;
+    while (frame_offset < frame_count) {
+        size_t chunk_frames = frame_count - frame_offset;
+        if (chunk_frames > chunk_frames_max)
+            chunk_frames = chunk_frames_max;
 
-        for (size_t i = 0; i < chunk_samples; ++i) {
+        for (size_t frame = 0; frame < chunk_frames; ++frame) {
+            /* Update gain ONCE per stereo frame: L/R always share one gain. */
             current_volume += I2S_VOLUME_RAMP_ALPHA *
                 (target_volume - current_volume);
-            /* Finish a mute ramp cleanly; never leave a dither-only noise tail. */
             if (target_volume <= 0.0f && current_volume < 0.0001f)
                 current_volume = 0.0f;
-            volume_buffer[i] = scale_and_quantize(
-                samples[offset + i], current_volume);
+
+            const size_t sample = (frame_offset + frame) * 2U;
+            volume_buffer[frame * 2U] =
+                scale_and_quantize(samples[sample], current_volume);
+            volume_buffer[frame * 2U + 1U] =
+                scale_and_quantize(samples[sample + 1U], current_volume);
         }
 
         if (fabsf(target_volume - current_volume) < 1.0e-7f)
             current_volume = target_volume;
 
+        const size_t chunk_samples = chunk_frames * 2U;
         const size_t chunk_bytes = chunk_samples * sizeof(int16_t);
         size_t bytes_written = 0;
         const esp_err_t ret = i2s_channel_write(
@@ -187,7 +193,7 @@ void i2s_output_write(const uint8_t *data, size_t len)
             return;
         }
 
-        offset += chunk_samples;
+        frame_offset += chunk_frames;
     }
 }
 
