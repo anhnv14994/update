@@ -2933,7 +2933,7 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
          * ----------------------------------------------------
          * Analog Character V5.1 Lite — two-stage parallel model
          * ----------------------------------------------------
-         * Stage 1: 80–320 Hz, H2 body.
+         * Stage 1: 80–450 Hz, H2 body.
          * Stage 2: 250 Hz–1.4 kHz, H2 + controllable H3.
          *
          * Harmonic Interaction coordinates Stage 2 against Stage 1 energy.
