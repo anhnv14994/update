@@ -3,6 +3,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
@@ -23,52 +24,101 @@ static char s_saved_ssid[32] = "";
 static esp_netif_t *s_sta_netif = NULL;
 static esp_netif_t *s_ap_netif = NULL;
 static bool s_ap_mode = false;
+static esp_timer_handle_t s_reconnect_timer = NULL;
+static uint32_t s_reconnect_attempt = 0;
+
+/* Reconnect outside the default event-loop task. */
+static void reconnect_timer_cb(void *arg)
+{
+    (void)arg;
+    if (s_ap_mode || s_wifi_connected) return;
+
+    esp_err_t err = esp_wifi_connect();
+    if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
+        ESP_LOGW(TAG, "WiFi reconnect request failed: %s", esp_err_to_name(err));
+    }
+}
+
+static void schedule_reconnect(void)
+{
+    if (!s_reconnect_timer || s_ap_mode || s_wifi_connected) return;
+
+    uint32_t attempt = s_reconnect_attempt;
+    if (attempt > 4) attempt = 4;
+    if (s_reconnect_attempt < 4) s_reconnect_attempt++;
+
+    /* 500 ms, 1 s, 2 s, 4 s, then 8 s. */
+    uint64_t delay_us = (500ULL << attempt) * 1000ULL;
+    (void)esp_timer_stop(s_reconnect_timer);
+
+    esp_err_t err = esp_timer_start_once(s_reconnect_timer, delay_us);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to schedule WiFi reconnect: %s", esp_err_to_name(err));
+        return;
+    }
+
+    ESP_LOGW(TAG, "WiFi reconnect scheduled in %llu ms (attempt %u)",
+             (unsigned long long)(delay_us / 1000ULL),
+             (unsigned)s_reconnect_attempt);
+}
 
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
 {
+    (void)arg;
+
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         ESP_LOGI(TAG, "WiFi STA started, connecting...");
-        esp_wifi_connect();
+        esp_err_t err = esp_wifi_connect();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Initial WiFi connect request failed: %s", esp_err_to_name(err));
+        }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
-        ESP_LOGI(TAG, "WiFi connected to AP");
+        ESP_LOGI(TAG, "WiFi connected to AP; waiting for DHCP");
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *event =
             (wifi_event_sta_disconnected_t *)event_data;
+        int reason = event ? event->reason : -1;
 
-        ESP_LOGW(TAG,
-                "WiFi disconnected! reason=%d, ssid=%s",
-                event->reason, s_saved_ssid);
+        ESP_LOGW(TAG, "WiFi disconnected! reason=%d, ssid=%s",
+                 reason, s_saved_ssid);
 
         s_wifi_connected = false;
         s_ip_address[0] = '\0';
-
-        vTaskDelay(pdMS_TO_TICKS(500));
-        esp_wifi_connect();      
+        schedule_reconnect();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-        snprintf(s_ip_address, sizeof(s_ip_address), IPSTR, IP2STR(&event->ip_info.ip));
-        ESP_LOGI(TAG, "Got IP: %s", s_ip_address);
-        s_wifi_connected = true;
+        if (event) {
+            snprintf(s_ip_address, sizeof(s_ip_address), IPSTR, IP2STR(&event->ip_info.ip));
+            s_wifi_connected = (event->ip_info.ip.addr != 0);
+            if (s_wifi_connected) {
+                s_reconnect_attempt = 0;
+                if (s_reconnect_timer) (void)esp_timer_stop(s_reconnect_timer);
+                ESP_LOGI(TAG, "Got IP: %s", s_ip_address);
+            }
+        }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STACONNECTED) {
         wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
-        ESP_LOGI(TAG, "Station %02X:%02X:%02X:%02X:%02X:%02X joined AP, AID=%d",
-                 event->mac[0], event->mac[1], event->mac[2],
-                 event->mac[3], event->mac[4], event->mac[5], event->aid);
+        if (event) {
+            ESP_LOGI(TAG, "Station %02X:%02X:%02X:%02X:%02X:%02X joined AP, AID=%d",
+                     event->mac[0], event->mac[1], event->mac[2],
+                     event->mac[3], event->mac[4], event->mac[5], event->aid);
+        }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STADISCONNECTED) {
         wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
-        ESP_LOGE(TAG, "Station %02X:%02X:%02X:%02X:%02X:%02X left AP, AID=%d, reason=%d",
-                 event->mac[0], event->mac[1], event->mac[2],
-                 event->mac[3], event->mac[4], event->mac[5],
-                 event->aid, event->reason);
+        if (event) {
+            ESP_LOGI(TAG, "Station %02X:%02X:%02X:%02X:%02X:%02X left AP, AID=%d, reason=%d",
+                     event->mac[0], event->mac[1], event->mac[2],
+                     event->mac[3], event->mac[4], event->mac[5],
+                     event->aid, event->reason);
+        }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_START) {
         ESP_LOGI(TAG, "AP started successfully");
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_AP_STAIPASSIGNED) {
         ip_event_ap_staipassigned_t* event = (ip_event_ap_staipassigned_t*) event_data;
-        ESP_LOGI(TAG, "DHCP assigned IP " IPSTR " to station", IP2STR(&event->ip));
-    } else {
-        ESP_LOGW(TAG, "Unhandled WiFi event: base=%s, id=%ld",
-                 event_base == WIFI_EVENT ? "WIFI_EVENT" : "IP_EVENT", event_id);
+        if (event) {
+            ESP_LOGI(TAG, "DHCP assigned IP " IPSTR " to station", IP2STR(&event->ip));
+        }
     }
 }
 
@@ -173,7 +223,6 @@ void wifi_manager_init(void)
 
     esp_err_t ret = nvs_flash_init();
     ESP_LOGI(TAG, "NVS init result: %d", ret);
-
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_LOGW(TAG, "NVS needs erase, erasing...");
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -183,7 +232,6 @@ void wifi_manager_init(void)
 
     ESP_LOGI(TAG, "Initializing TCP/IP stack...");
     ESP_ERROR_CHECK(esp_netif_init());
-
     ESP_LOGI(TAG, "Creating default event loop...");
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
@@ -191,76 +239,76 @@ void wifi_manager_init(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    // Explicitly clear any stale WiFi state from previous crashed session
     ESP_LOGI(TAG, "Clearing any stale WiFi associations...");
-    esp_wifi_set_mode(WIFI_MODE_NULL);
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_NULL));
     vTaskDelay(pdMS_TO_TICKS(100));
-
-    ESP_LOGI(TAG, "Registering event handlers...");
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_AP_STAIPASSIGNED, &wifi_event_handler, NULL));
 
     char ssid[32] = {0};
     char password[64] = {0};
-
     ESP_LOGI(TAG, "Checking for saved WiFi credentials...");
-    if (!load_wifi_credentials(ssid, password)) {
-        ESP_LOGI(TAG, "No credentials found, starting AP mode");
+    bool have_credentials = load_wifi_credentials(ssid, password);
 
-        // Create AP netif only when needed
-        s_ap_netif = esp_netif_create_default_wifi_ap();
-
-        start_ap_mode();
-    } else {
+    /*
+     * The default netif installs ID-specific ESP-IDF handlers. Create it
+     * first, then register our own ID-specific handlers below. Do not use
+     * ESP_EVENT_ANY_ID here: base-level handlers run before ID-level handlers.
+     */
+    if (have_credentials) {
         s_ap_mode = false;
-        ESP_LOGI(TAG, "Credentials found, connecting to WiFi: %s", ssid);
-
-        // Create STA netif only when needed
+        strlcpy(s_saved_ssid, ssid, sizeof(s_saved_ssid));
         s_sta_netif = esp_netif_create_default_wifi_sta();
 
-        // Stop DHCP if it's running (shouldn't be, but just in case)
-        esp_netif_dhcpc_stop(s_sta_netif);
-        vTaskDelay(pdMS_TO_TICKS(100));
+        esp_timer_create_args_t timer_args = {
+            .callback = reconnect_timer_cb,
+            .arg = NULL,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "wifi_reconnect",
+        };
+        ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_reconnect_timer));
+    } else {
+        s_ap_mode = true;
+        s_ap_netif = esp_netif_create_default_wifi_ap();
+    }
 
-        // Check DHCP status first
-        esp_netif_dhcp_status_t dhcp_status;
-        esp_netif_dhcpc_get_status(s_sta_netif, &dhcp_status);
-        ESP_LOGI(TAG, "Current DHCP status: %d", dhcp_status);
+    ESP_LOGI(TAG, "Registering application event handlers...");
+    ESP_ERROR_CHECK(esp_event_handler_register(
+        WIFI_EVENT, WIFI_EVENT_STA_START, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(
+        WIFI_EVENT, WIFI_EVENT_STA_CONNECTED, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(
+        WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(
+        WIFI_EVENT, WIFI_EVENT_AP_START, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(
+        WIFI_EVENT, WIFI_EVENT_AP_STACONNECTED, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(
+        WIFI_EVENT, WIFI_EVENT_AP_STADISCONNECTED, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(
+        IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(
+        IP_EVENT, IP_EVENT_AP_STAIPASSIGNED, &wifi_event_handler, NULL));
 
-        if (dhcp_status == ESP_NETIF_DHCP_STOPPED) {
-            ESP_ERROR_CHECK(esp_netif_dhcpc_start(s_sta_netif));
-            ESP_LOGI(TAG, "DHCP client started");
-        } else if (dhcp_status == ESP_NETIF_DHCP_STARTED) {
-            ESP_LOGI(TAG, "DHCP already running");
-        } else {
-            // Stop and restart to clear any stale state
-            esp_netif_dhcpc_stop(s_sta_netif);
-            vTaskDelay(pdMS_TO_TICKS(100));
-            ESP_ERROR_CHECK(esp_netif_dhcpc_start(s_sta_netif));
-            ESP_LOGI(TAG, "DHCP restarted");
-        }
+    if (!have_credentials) {
+        ESP_LOGI(TAG, "No credentials found, starting AP mode");
+        start_ap_mode();
+    } else {
+        ESP_LOGI(TAG, "Credentials found, connecting to WiFi: %s", ssid);
 
         wifi_config_t wifi_config = {0};
         strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
         strncpy((char *)wifi_config.sta.password, password, sizeof(wifi_config.sta.password));
         wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+        /* Scan all channels to tolerate AP channel changes. */
         wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
 
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-
-        // Disconnect any stale connections BEFORE setting new config
-        esp_wifi_disconnect();
-        vTaskDelay(pdMS_TO_TICKS(100));
-
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
         ESP_ERROR_CHECK(esp_wifi_start());
-        esp_wifi_set_ps(WIFI_PS_NONE);
+        ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     }
 
     ESP_LOGI(TAG, "=== WiFi Manager Init COMPLETE ===");
 }
-
 bool wifi_manager_save_credentials(const char *ssid, const char *password)
 {
     nvs_handle_t nvs_handle;
