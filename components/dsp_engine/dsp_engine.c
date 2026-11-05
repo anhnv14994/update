@@ -29,6 +29,11 @@ static const char *TAG = "dsp_engine";
 
 #define DSP_SAMPLE_RATE_HZ   44100.0f
 
+/* Fixed subsonic protection: 4th-order Butterworth HPF, always active. */
+#define DSP_SUBSONIC_HPF_HZ       30.0f
+#define DSP_SUBSONIC_HPF_Q1       0.541196100146197f
+#define DSP_SUBSONIC_HPF_Q2       1.306562964876377f
+
 #define DSP_NVS_NAMESPACE    "dsp_cfg"
 #define DSP_NVS_KEY_ENABLED  "enabled"
 #define DSP_NVS_KEY_ACTIVE   "active"
@@ -158,6 +163,10 @@ static float s_peq_state[DSP_NUM_STAGES][4]; /* w0L,w1L,w0R,w1R */
 #else
 static biquad_state_t s_state[DSP_NUM_STAGES][2];
 #endif
+
+/* Two cascaded 2nd-order sections form a 4th-order Butterworth HPF. */
+static biquad_coef_t  s_subsonic_hpf_coefs[2];
+static biquad_state_t s_subsonic_hpf_state[2][2]; /* [L/R][section] */
 
 
 /* ============================================================
@@ -688,6 +697,38 @@ static void calc_butterworth_hpf_q(
 
     out->a1 = a1 / a0;
     out->a2 = a2 / a0;
+}
+
+
+/* ============================================================
+ * Fixed subsonic HPF — 4th-order Butterworth
+ * ============================================================ */
+static void init_subsonic_hpf(void)
+{
+    calc_butterworth_hpf_q(
+        DSP_SAMPLE_RATE_HZ,
+        DSP_SUBSONIC_HPF_HZ,
+        DSP_SUBSONIC_HPF_Q1,
+        &s_subsonic_hpf_coefs[0]
+    );
+    calc_butterworth_hpf_q(
+        DSP_SAMPLE_RATE_HZ,
+        DSP_SUBSONIC_HPF_HZ,
+        DSP_SUBSONIC_HPF_Q2,
+        &s_subsonic_hpf_coefs[1]
+    );
+
+    memset(s_subsonic_hpf_state, 0, sizeof(s_subsonic_hpf_state));
+}
+
+static inline float subsonic_hpf_process_sample(float x, unsigned channel)
+{
+    x = biquad_process_sample(
+        x, &s_subsonic_hpf_coefs[0],
+        &s_subsonic_hpf_state[channel][0]);
+    return biquad_process_sample(
+        x, &s_subsonic_hpf_coefs[1],
+        &s_subsonic_hpf_state[channel][1]);
 }
 
 
@@ -1268,6 +1309,8 @@ esp_err_t dsp_engine_init(void)
     memset(s_state, 0, sizeof(s_state));
 #endif
 
+    /* Independent output protection, not part of the PEQ/Character bypass. */
+    init_subsonic_hpf();
 
     /*
      * NVS.
@@ -1388,6 +1431,9 @@ esp_err_t dsp_engine_init(void)
         s_enabled,
         (int)s_active
     );
+    ESP_LOGI(TAG,
+             "Subsonic HPF: %.0f Hz, 4th-order Butterworth (24 dB/oct), always ON",
+             DSP_SUBSONIC_HPF_HZ);
 #if CONFIG_DSP_PEQ_USE_ESP_DSP_AES3
     ESP_LOGI(TAG, "PEQ backend: ESP-DSP dual-mono block biquad (AES3 eligible)");
 #elif CONFIG_DSP_PEQ_USE_ESP_DSP
@@ -2265,7 +2311,37 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
     if (!enabled) {
         if (s_character_state.running)
             reset_character_states();
-        return pcm_in;
+
+        /*
+         * Keep the fixed subsonic protection active even when the user
+         * bypasses PEQ/Analog Character. The legacy API uses s_scratch;
+         * the real-time pipeline continues to run in-place.
+         */
+        int16_t *bypass_out = (int16_t *)(pcm_out ? pcm_out : s_scratch);
+        if (!pcm_out) {
+            if (!s_scratch || len_bytes > s_scratch_len)
+                return pcm_in;
+            memcpy(bypass_out, pcm_in, len_bytes);
+        }
+
+        const size_t bypass_frames = len_bytes / 4U;
+        for (size_t frame = 0; frame < bypass_frames; ++frame) {
+            float left = (float)bypass_out[frame * 2U] * (1.0f / 32768.0f);
+            float right = (float)bypass_out[frame * 2U + 1U] * (1.0f / 32768.0f);
+
+            left = subsonic_hpf_process_sample(left, 0U);
+            right = subsonic_hpf_process_sample(right, 1U);
+
+            float left_i16 = left * 32768.0f;
+            float right_i16 = right * 32768.0f;
+            left_i16 = clampf_local(left_i16, -32768.0f, 32767.0f);
+            right_i16 = clampf_local(right_i16, -32768.0f, 32767.0f);
+
+            bypass_out[frame * 2U] = (int16_t)left_i16;
+            bypass_out[frame * 2U + 1U] = (int16_t)right_i16;
+        }
+
+        return pcm_out ? pcm_out : s_scratch;
     }
 
 
@@ -2697,6 +2773,16 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
                 }
             }
         }
+
+        /*
+         * ----------------------------------------------------
+         * Fixed subsonic protection
+         * ----------------------------------------------------
+         * Applied after PEQ + Character and before master/limiter.
+         * Both channels use identical coefficients and independent states.
+         */
+        yl = subsonic_hpf_process_sample(yl, 0U);
+        yr = subsonic_hpf_process_sample(yr, 1U);
 
         /*
          * ----------------------------------------------------
