@@ -14,7 +14,7 @@ void stereo_spatial_get_config(const stereo_spatial_ctx_t *ctx, stereo_spatial_c
 static const char *TAG = "dsp_api";
 
 #define DSP_OPTIONS_MAGIC   0x4453504FU /* "DSPO" */
-#define DSP_OPTIONS_VERSION 2U
+#define DSP_OPTIONS_VERSION 3U
 #define DSP_OPTIONS_NS      "dsp_opts"
 
 /* Exact V1 layout kept for in-place migration of existing NVS records. */
@@ -30,6 +30,23 @@ typedef struct {
     uint8_t enable_width_eq;
     uint8_t enable_decorrelator;
 } dsp_preset_options_v1_blob_t;
+
+/* V2 was used briefly before DSP master bypass was added to the snapshot. */
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint8_t hf_a_enabled;
+    uint8_t hf_b_enabled;
+    uint8_t hf_a_strength_pct;
+    uint8_t hf_b_strength_pct;
+    uint8_t dynamic_loudness_enabled;
+    uint8_t spatial_mode;
+    uint8_t enable_width_eq;
+    uint8_t enable_decorrelator;
+    uint8_t character_stage_mask;
+    uint8_t character_feature_mask;
+    dsp_character_t character;
+} dsp_preset_options_v2_blob_t;
 
 typedef struct {
     uint32_t magic;
@@ -141,6 +158,72 @@ static esp_err_t apply_legacy_preset_options(
     return ESP_OK;
 }
 
+static bool preset_options_v2_valid(const dsp_preset_options_v2_blob_t *blob)
+{
+    return blob &&
+        blob->magic == DSP_OPTIONS_MAGIC &&
+        blob->version == 2U &&
+        blob->hf_a_enabled <= 1U &&
+        blob->hf_b_enabled <= 1U &&
+        blob->hf_a_strength_pct <= 100U &&
+        blob->hf_b_strength_pct <= 100U &&
+        blob->dynamic_loudness_enabled <= 1U &&
+        blob->spatial_mode <= STEREO_SPATIAL_MODE_WIDE &&
+        blob->enable_width_eq <= 1U &&
+        blob->enable_decorrelator <= 1U &&
+        (blob->character_stage_mask & (uint8_t)~DSP_CHARACTER_STAGE_MASK_ALL) == 0U &&
+        (blob->character_feature_mask & (uint8_t)~DSP_CHARACTER_FEATURE_MASK_ALL) == 0U;
+}
+
+static esp_err_t apply_v2_preset_options(
+    dsp_preset_id_t id,
+    const dsp_preset_options_v2_blob_t *old)
+{
+    if (!preset_options_v2_valid(old)) {
+        ESP_LOGW(TAG, "Preset %d V2 options invalid; using defaults", (int)id);
+        apply_default_preset_options();
+        return ESP_OK;
+    }
+
+    esp_err_t err = dsp_engine_set_character(&old->character);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Preset %d V2 Character invalid; using defaults", (int)id);
+        apply_default_preset_options();
+        return ESP_OK;
+    }
+
+    err = dsp_engine_set_character_hf(
+        old->hf_a_enabled != 0U, old->hf_b_enabled != 0U,
+        old->hf_a_strength_pct, old->hf_b_strength_pct);
+    if (err != ESP_OK)
+        return err;
+
+    err = dsp_engine_set_dynamic_loudness(old->dynamic_loudness_enabled != 0U);
+    if (err != ESP_OK)
+        return err;
+
+    err = dsp_engine_set_character_diagnostics(
+        old->character_stage_mask, old->character_feature_mask);
+    if (err != ESP_OK)
+        return err;
+
+    if (g_stereo_ctx) {
+        const stereo_spatial_config_t cfg = {
+            .mode = (stereo_spatial_mode_t)old->spatial_mode,
+            .enable_width_eq = old->enable_width_eq != 0U,
+            .enable_decorrelator = old->enable_decorrelator != 0U
+        };
+        stereo_spatial_set_config(g_stereo_ctx, &cfg);
+    }
+
+    ESP_LOGI(TAG, "Preset %d V2 options upgraded to V3 complete snapshot", (int)id);
+    err = save_preset_options(id);
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "Preset %d V2 migration save failed: %s",
+                 (int)id, esp_err_to_name(err));
+    return ESP_OK;
+}
+
 static esp_err_t apply_preset_options(dsp_preset_id_t id)
 {
     if (id < 0 || id >= DSP_NUM_PRESETS)
@@ -181,6 +264,18 @@ static esp_err_t apply_preset_options(dsp_preset_id_t id)
             return ESP_OK;
         }
         return apply_legacy_preset_options(id, &old);
+    }
+
+    if (len == sizeof(dsp_preset_options_v2_blob_t)) {
+        dsp_preset_options_v2_blob_t old;
+        size_t read_len = sizeof(old);
+        err = nvs_get_blob(nvs, key, &old, &read_len);
+        nvs_close(nvs);
+        if (err != ESP_OK || read_len != sizeof(old)) {
+            apply_default_preset_options();
+            return ESP_OK;
+        }
+        return apply_v2_preset_options(id, &old);
     }
 
     if (len != sizeof(dsp_preset_options_blob_t)) {
