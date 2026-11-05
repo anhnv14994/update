@@ -438,6 +438,26 @@ static inline float clampf_local(float x, float lo, float hi)
     return x;
 }
 
+/* Small TPDF dither at the final float -> PCM16 boundary. Audio-task owned. */
+static uint32_t s_dither_rng = 0x6D2B79F5U;
+
+static inline float dither_uniform(void)
+{
+    s_dither_rng = s_dither_rng * 1664525U + 1013904223U;
+    return (float)(s_dither_rng >> 8) * (1.0f / 16777216.0f);
+}
+
+static inline int16_t float_to_pcm16_tpdf(float sample)
+{
+    if (!isfinite(sample) || fabsf(sample) < 1.0e-20f)
+        return 0;
+
+    const float dither = dither_uniform() - dither_uniform();
+    const float scaled = clampf_local(
+        sample * 32768.0f + dither, -32768.0f, 32767.0f);
+    return (int16_t)lrintf(scaled);
+}
+
 /* Derive all control-dependent Character coefficients once per PCM block. */
 static inline void character_calculate_gain_coeffs(
     float warmth,
@@ -2604,8 +2624,8 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
 
             left = clampf_local(left, -0.985f, 0.985f);
             right = clampf_local(right, -0.985f, 0.985f);
-            bypass_out[frame * 2U] = (int16_t)(left * 32768.0f);
-            bypass_out[frame * 2U + 1U] = (int16_t)(right * 32768.0f);
+            bypass_out[frame * 2U] = float_to_pcm16_tpdf(left);
+            bypass_out[frame * 2U + 1U] = float_to_pcm16_tpdf(right);
         }
 
         s_output_state.volume_current = volume;
@@ -3224,16 +3244,8 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
         yr = clampf_local(yr, -0.985f, 0.985f);
 
 
-        out[i * 2] =
-            (int16_t)(
-                yl * 32768.0f
-            );
-
-
-        out[i * 2 + 1] =
-            (int16_t)(
-                yr * 32768.0f
-            );
+        out[i * 2] = float_to_pcm16_tpdf(yl);
+        out[i * 2 + 1] = float_to_pcm16_tpdf(yr);
     }
 
 
