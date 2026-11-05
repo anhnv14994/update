@@ -2498,13 +2498,19 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
     const bool dynamic_loudness_requested = atomic_load_explicit(
         &s_dynamic_loudness_enabled, memory_order_acquire);
 
-    /* Reference point is actual 0.5 linear volume (about -6.0 dB). */
-    const float output_volume_db = 20.0f * log10f(fmaxf(target_output_volume, 0.001f));
-    const float below_reference_db = fmaxf(-6.0f - output_volume_db, 0.0f);
-    const float target_loudness_bass = dynamic_loudness_requested
-        ? db_to_linear(fminf(0.22f * below_reference_db, 3.0f)) : 1.0f;
-    const float target_loudness_treble = dynamic_loudness_requested
-        ? db_to_linear(fminf(0.07f * below_reference_db, 1.0f)) : 1.0f;
+    /* Reference point is actual 0.5 linear volume (about -6.0 dB).
+     * Keep log/pow out of the default OFF path. */
+    float target_loudness_bass = 1.0f;
+    float target_loudness_treble = 1.0f;
+    if (dynamic_loudness_requested) {
+        const float output_volume_db =
+            20.0f * log10f(fmaxf(target_output_volume, 0.001f));
+        const float below_reference_db = fmaxf(-6.0f - output_volume_db, 0.0f);
+        target_loudness_bass =
+            db_to_linear(fminf(0.22f * below_reference_db, 3.0f));
+        target_loudness_treble =
+            db_to_linear(fminf(0.07f * below_reference_db, 1.0f));
+    }
 
 
     /*
@@ -2539,10 +2545,12 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
         for (size_t frame = 0; frame < bypass_frames; ++frame) {
             volume += character_filters.output_volume_alpha *
                 (target_output_volume - volume);
-            s_output_state.bass_gain += character_filters.loudness_gain_alpha *
-                (target_loudness_bass - s_output_state.bass_gain);
-            s_output_state.treble_gain += character_filters.loudness_gain_alpha *
-                (target_loudness_treble - s_output_state.treble_gain);
+            if (loudness_active) {
+                s_output_state.bass_gain += character_filters.loudness_gain_alpha *
+                    (target_loudness_bass - s_output_state.bass_gain);
+                s_output_state.treble_gain += character_filters.loudness_gain_alpha *
+                    (target_loudness_treble - s_output_state.treble_gain);
+            }
 
             float left = (float)bypass_out[frame * 2U] * (1.0f / 32768.0f);
             float right = (float)bypass_out[frame * 2U + 1U] * (1.0f / 32768.0f);
@@ -2874,10 +2882,12 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
 
         output_volume += character_filters.output_volume_alpha *
             (target_output_volume - output_volume);
-        s_output_state.bass_gain += character_filters.loudness_gain_alpha *
-            (target_loudness_bass - s_output_state.bass_gain);
-        s_output_state.treble_gain += character_filters.loudness_gain_alpha *
-            (target_loudness_treble - s_output_state.treble_gain);
+        if (loudness_active) {
+            s_output_state.bass_gain += character_filters.loudness_gain_alpha *
+                (target_loudness_bass - s_output_state.bass_gain);
+            s_output_state.treble_gain += character_filters.loudness_gain_alpha *
+                (target_loudness_treble - s_output_state.treble_gain);
+        }
 
 #if CONFIG_DSP_PEQ_USE_ESP_DSP_AES3
         float yl = s_peq_left[i];
