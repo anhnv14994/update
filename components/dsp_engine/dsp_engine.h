@@ -144,6 +144,14 @@ void dsp_engine_process_inplace(uint8_t *pcm, size_t len_bytes);
 esp_err_t dsp_engine_set_enabled(bool enabled);
 bool      dsp_engine_get_enabled(void);
 
+/* AirPlay volume is applied after Character in float, before PCM16 output. */
+esp_err_t dsp_engine_set_output_volume(float volume);
+float     dsp_engine_get_output_volume(void);
+
+/* Session-only low-volume compensation; OFF by default. */
+esp_err_t dsp_engine_set_dynamic_loudness(bool enabled);
+bool      dsp_engine_get_dynamic_loudness(void);
+
 /* ============================================================
  * Active preset
  * ============================================================ */
