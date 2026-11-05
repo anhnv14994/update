@@ -18,6 +18,7 @@ static const char *TAG = "web_log";
 #define LOG_RING_SIZE (32 * 1024)
 
 static char *s_ring = NULL;
+static size_t s_ring_capacity = 0;
 static size_t s_write_pos = 0;
 static bool s_filled = false;
 static portMUX_TYPE s_ring_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -26,19 +27,18 @@ static vprintf_like_t s_prev_vprintf = NULL;
 
 static void ring_write(const char *data, size_t len)
 {
-    if (!s_ring || len == 0) return;
-    if (len >= LOG_RING_SIZE) {
-        // Only keep the tail if a single write is (absurdly) bigger than the ring.
-        data += (len - LOG_RING_SIZE);
-        len = LOG_RING_SIZE;
+    if (!s_ring || s_ring_capacity == 0 || len == 0) return;
+    if (len >= s_ring_capacity) {
+        data += (len - s_ring_capacity);
+        len = s_ring_capacity;
     }
 
     portENTER_CRITICAL(&s_ring_lock);
-    size_t space_to_end = LOG_RING_SIZE - s_write_pos;
+    size_t space_to_end = s_ring_capacity - s_write_pos;
     if (len <= space_to_end) {
         memcpy(s_ring + s_write_pos, data, len);
         s_write_pos += len;
-        if (s_write_pos == LOG_RING_SIZE) {
+        if (s_write_pos == s_ring_capacity) {
             s_write_pos = 0;
             s_filled = true;
         }
@@ -51,21 +51,21 @@ static void ring_write(const char *data, size_t len)
     portEXIT_CRITICAL(&s_ring_lock);
 }
 
-// Returns the number of bytes written into `out` (chronological order,
-// oldest first). `out` must be at least LOG_RING_SIZE bytes.
-static size_t ring_read_all(char *out)
+// Copy the newest bytes that fit in out_capacity, in chronological order.
+static size_t ring_read_tail(char *out, size_t out_capacity)
 {
-    size_t n;
+    if (!s_ring || !out || out_capacity == 0 || s_ring_capacity == 0)
+        return 0;
+
     portENTER_CRITICAL(&s_ring_lock);
-    if (!s_filled) {
-        n = s_write_pos;
-        memcpy(out, s_ring, n);
-    } else {
-        size_t first_chunk = LOG_RING_SIZE - s_write_pos; // oldest data starts at write_pos
-        memcpy(out, s_ring + s_write_pos, first_chunk);
-        memcpy(out + first_chunk, s_ring, s_write_pos);
-        n = LOG_RING_SIZE;
-    }
+    const size_t available = s_filled ? s_ring_capacity : s_write_pos;
+    const size_t n = available < out_capacity ? available : out_capacity;
+    const size_t start = (s_write_pos + s_ring_capacity - n) % s_ring_capacity;
+    const size_t first_chunk = (n < (s_ring_capacity - start))
+        ? n : (s_ring_capacity - start);
+    memcpy(out, s_ring + start, first_chunk);
+    if (n > first_chunk)
+        memcpy(out + first_chunk, s_ring, n - first_chunk);
     portEXIT_CRITICAL(&s_ring_lock);
     return n;
 }
@@ -100,12 +100,20 @@ static int log_capture_vprintf(const char *fmt, va_list args)
 
 esp_err_t web_log_init(void)
 {
-    s_ring = heap_caps_malloc(LOG_RING_SIZE, MALLOC_CAP_SPIRAM);
-    if (!s_ring) {
-        // Fall back to internal RAM with a smaller buffer if PSRAM alloc fails
-        s_ring = malloc(4096);
-        if (!s_ring) return ESP_ERR_NO_MEM;
+    s_ring = heap_caps_malloc(LOG_RING_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (s_ring) {
+        s_ring_capacity = LOG_RING_SIZE;
+    } else {
+        // Internal-RAM fallback is genuinely 4 KB; all ring operations use its real capacity.
+        s_ring_capacity = 4096;
+        s_ring = malloc(s_ring_capacity);
+        if (!s_ring) {
+            s_ring_capacity = 0;
+            return ESP_ERR_NO_MEM;
+        }
     }
+    s_write_pos = 0;
+    s_filled = false;
     s_prev_vprintf = esp_log_set_vprintf(log_capture_vprintf);
     ESP_LOGI(TAG, "Web log capture active (%d KB ring buffer)", LOG_RING_SIZE / 1024);
     return ESP_OK;
@@ -116,12 +124,18 @@ esp_err_t web_log_init(void)
 // ---------------------------------------------------------------------------
 static esp_err_t api_log_get_handler(httpd_req_t *req)
 {
-    char *buf = malloc(LOG_RING_SIZE + 1);
+    // Prefer PSRAM for the response snapshot; if unavailable, return the newest 4 KB.
+    size_t out_capacity = LOG_RING_SIZE;
+    char *buf = heap_caps_malloc(out_capacity + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) {
+        out_capacity = 4096;
+        buf = malloc(out_capacity + 1);
+    }
     if (!buf) {
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
-    size_t n = ring_read_all(buf);
+    size_t n = ring_read_tail(buf, out_capacity);
     buf[n] = '\0';
 
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
