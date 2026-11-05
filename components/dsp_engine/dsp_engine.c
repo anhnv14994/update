@@ -3118,10 +3118,6 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
                             : character_filters.hf_fast_release_alpha;
                         hf->fast_env_a[ch] += alpha *
                             (abs_a - hf->fast_env_a[ch]);
-                        transient_a = clampf_local(
-                            (hf->fast_env_a[ch] -
-                             1.25f * hf->slow_env_a[ch] - 0.0006f) /
-                            (hf->fast_env_a[ch] + 0.0012f), 0.0f, 1.0f);
                     } else {
                         /* B-only mode needs the slow A reference, not A attack tracking. */
                         hf->fast_env_a[ch] = 0.0f;
@@ -3132,6 +3128,13 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
                         : character_filters.hf_slow_release_alpha;
                     hf->slow_env_a[ch] += alpha *
                         (abs_a - hf->slow_env_a[ch]);
+
+                    if (a_active) {
+                        transient_a = clampf_local(
+                            (hf->fast_env_a[ch] -
+                             1.25f * hf->slow_env_a[ch] - 0.0006f) /
+                            (hf->fast_env_a[ch] + 0.0012f), 0.0f, 1.0f);
+                    }
 
                     float y = x;
                     if (a_active)
