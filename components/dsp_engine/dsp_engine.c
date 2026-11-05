@@ -211,7 +211,6 @@ typedef struct {
     float hf_slow_attack_alpha;
     float hf_slow_release_alpha;
     float hf_mix_alpha;
-    float output_volume_alpha;
     float loudness_gain_alpha;
     float loudness_low_alpha;
     float loudness_high_alpha;
@@ -275,7 +274,6 @@ static _Atomic uint32_t s_output_volume_q = 50000U; /* preserve RAOP's 0.05 star
 static _Atomic bool s_dynamic_loudness_enabled = false;
 
 typedef struct {
-    float volume_current;
     float low_lp[2];
     float high_lp[2];
     float bass_gain;
@@ -284,7 +282,6 @@ typedef struct {
 } dsp_output_state_t;
 
 static dsp_output_state_t s_output_state = {
-    .volume_current = 0.05f,
     .bass_gain = 1.0f,
     .treble_gain = 1.0f,
 };
@@ -320,20 +317,20 @@ static const dsp_preset_t s_factory_presets[DSP_NUM_PRESETS] = {
         .num_bands = 10,
 
         .bands = {
-            {   35.0f,  1.0f, 0.75f },
-            {   70.0f,  0.8f, 1.00f },
-            {  120.0f, -0.5f, 1.00f },
-            {  250.0f, -1.2f, 0.80f },
-            {  500.0f,  0.2f, 1.00f },
-            { 1200.0f,  0.7f, 0.70f },
-            { 2500.0f,  0.5f, 0.70f },
-            { 4500.0f, -0.5f, 0.80f },
-            { 8000.0f, -0.3f, 0.80f },
-            { 14000.0f, 0.3f, 0.70f },
+            {   35.0f,  1.5f, 0.75f },
+            {   70.0f,  1.0f, 1.00f },
+            {  120.0f, -0.8f, 1.20f },
+            {  250.0f, -1.2f, 1.40f },
+            {  500.0f,  0.5f, 1.30f },
+            { 1200.0f,  1.2f, 1.40f },
+            { 2500.0f,  1.8f, 1.50f },
+            { 4500.0f,  0.8f, 1.60f },
+            { 8000.0f, -0.5f, 1.20f },
+            { 14000.0f, 1.5f, 0.70f },
         },
 
         .shelf_freq = 16000.0f,
-        .shelf_gain_db = 0.2f,
+        .shelf_gain_db = 0.8f,
         .master_gain_db = -6.0f,
     },
 
@@ -438,24 +435,17 @@ static inline float clampf_local(float x, float lo, float hi)
     return x;
 }
 
-/* Small TPDF dither at the final float -> PCM16 boundary. Audio-task owned. */
-static uint32_t s_dither_rng = 0x6D2B79F5U;
-
-static inline float dither_uniform(void)
+/* Intermediate DSP quantization; TPDF dither is applied once at final I2S output. */
+static inline int16_t float_to_pcm16_rounded(float sample)
 {
-    s_dither_rng = s_dither_rng * 1664525U + 1013904223U;
-    return (float)(s_dither_rng >> 8) * (1.0f / 16777216.0f);
-}
-
-static inline int16_t float_to_pcm16_tpdf(float sample)
-{
-    if (!isfinite(sample) || fabsf(sample) < 1.0e-20f)
+    if (!isfinite(sample))
         return 0;
 
-    const float dither = dither_uniform() - dither_uniform();
     const float scaled = clampf_local(
-        sample * 32768.0f + dither, -32768.0f, 32767.0f);
-    return (int16_t)lrintf(scaled);
+        sample * 32768.0f, -32768.0f, 32767.0f);
+    const int32_t rounded = (int32_t)(
+        scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
+    return (int16_t)rounded;
 }
 
 /* Derive all control-dependent Character coefficients once per PCM block. */
@@ -905,9 +895,7 @@ static void rebuild_character_filters(void)
     next.hf_mix_alpha = 1.0f - expf(
         -1.0f / (0.008f * DSP_SAMPLE_RATE_HZ));
 
-    /* Output gain moves smoothly in 8 ms; loudness shelves settle in 50 ms. */
-    next.output_volume_alpha = 1.0f - expf(
-        -1.0f / (0.008f * DSP_SAMPLE_RATE_HZ));
+    /* Loudness shelves settle in 50 ms. Final volume ramp lives in I2S. */
     next.loudness_gain_alpha = 1.0f - expf(
         -1.0f / (0.050f * DSP_SAMPLE_RATE_HZ));
     next.loudness_low_alpha = 1.0f - expf(
@@ -1537,8 +1525,6 @@ esp_err_t dsp_engine_init(void)
     rebuild_character_filters();
     reset_character_states();
     memset(&s_output_state, 0, sizeof(s_output_state));
-    s_output_state.volume_current =
-        (float)atomic_load_explicit(&s_output_volume_q, memory_order_relaxed) * 0.000001f;
     s_output_state.bass_gain = 1.0f;
     s_output_state.treble_gain = 1.0f;
 
@@ -2518,14 +2504,16 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
     const bool dynamic_loudness_requested = atomic_load_explicit(
         &s_dynamic_loudness_enabled, memory_order_acquire);
 
-    /* Reference point is actual 0.5 linear volume (about -6.0 dB).
-     * Keep log/pow out of the default OFF path. */
+    /* Relative output-level estimate: AirPlay gain x active preset master.
+     * This is not SPL calibration; the feature remains OFF by default. */
     float target_loudness_bass = 1.0f;
     float target_loudness_treble = 1.0f;
     if (dynamic_loudness_requested) {
-        const float output_volume_db =
-            20.0f * log10f(fmaxf(target_output_volume, 0.001f));
-        const float below_reference_db = fmaxf(-6.0f - output_volume_db, 0.0f);
+        const float effective_gain = fmaxf(
+            target_output_volume * master_linear, 0.001f);
+        const float effective_gain_db = 20.0f * log10f(effective_gain);
+        const float below_reference_db =
+            fmaxf(-6.0f - effective_gain_db, 0.0f);
         target_loudness_bass =
             db_to_linear(fminf(0.22f * below_reference_db, 3.0f));
         target_loudness_treble =
@@ -2544,9 +2532,9 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
             memset(&s_character_hf_state, 0, sizeof(s_character_hf_state));
 
         /*
-         * Keep subsonic protection, post-Character volume, output master
-         * trim and optional low-volume compensation active in global bypass.
-         * The real-time pipeline continues to run in-place.
+         * Keep subsonic protection, output master trim and optional
+         * low-volume compensation active in global bypass. AirPlay volume
+         * is applied after Stereo Spatial by the final I2S output stage.
          */
         int16_t *bypass_out = (int16_t *)(pcm_out ? pcm_out : s_scratch);
         if (!pcm_out) {
@@ -2556,15 +2544,13 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
         }
 
         const size_t bypass_frames = len_bytes / 4U;
-        float volume = s_output_state.volume_current;
         const bool loudness_active =
-            dynamic_loudness_requested ||
+            fabsf(target_loudness_bass - 1.0f) > 0.0001f ||
+            fabsf(target_loudness_treble - 1.0f) > 0.0001f ||
             fabsf(s_output_state.bass_gain - 1.0f) > 0.0001f ||
             fabsf(s_output_state.treble_gain - 1.0f) > 0.0001f;
 
         for (size_t frame = 0; frame < bypass_frames; ++frame) {
-            volume += character_filters.output_volume_alpha *
-                (target_output_volume - volume);
             if (loudness_active) {
                 s_output_state.bass_gain += character_filters.loudness_gain_alpha *
                     (target_loudness_bass - s_output_state.bass_gain);
@@ -2606,8 +2592,8 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
             }
 
             /* Bypass omits PEQ/Character but retains preset master for fair ON/OFF tests. */
-            left *= master_linear * volume;
-            right *= master_linear * volume;
+            left *= master_linear;
+            right *= master_linear;
 
             const float knee = 0.94f;
             const float range = 0.045f;
@@ -2624,12 +2610,12 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
 
             left = clampf_local(left, -0.985f, 0.985f);
             right = clampf_local(right, -0.985f, 0.985f);
-            bypass_out[frame * 2U] = float_to_pcm16_tpdf(left);
-            bypass_out[frame * 2U + 1U] = float_to_pcm16_tpdf(right);
+            bypass_out[frame * 2U] = float_to_pcm16_rounded(left);
+            bypass_out[frame * 2U + 1U] = float_to_pcm16_rounded(right);
         }
 
-        s_output_state.volume_current = volume;
-        if (!dynamic_loudness_requested &&
+        if (fabsf(target_loudness_bass - 1.0f) < 0.0001f &&
+            fabsf(target_loudness_treble - 1.0f) < 0.0001f &&
             fabsf(s_output_state.bass_gain - 1.0f) < 0.0002f &&
             fabsf(s_output_state.treble_gain - 1.0f) < 0.0002f) {
             s_output_state.bass_gain = 1.0f;
@@ -2766,9 +2752,9 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
     const float block_alpha = cached_block_alpha;
     const float inv_frames = cached_inv_frames;
 
-    float output_volume = s_output_state.volume_current;
     const bool loudness_active =
-        dynamic_loudness_requested ||
+        fabsf(target_loudness_bass - 1.0f) > 0.0001f ||
+        fabsf(target_loudness_treble - 1.0f) > 0.0001f ||
         fabsf(s_output_state.bass_gain - 1.0f) > 0.0001f ||
         fabsf(s_output_state.treble_gain - 1.0f) > 0.0001f;
 
@@ -2900,8 +2886,6 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
         if (interaction_for_stage2)
             current_interaction_scale += interaction_scale_step;
 
-        output_volume += character_filters.output_volume_alpha *
-            (target_output_volume - output_volume);
         if (loudness_active) {
             s_output_state.bass_gain += character_filters.loudness_gain_alpha *
                 (target_loudness_bass - s_output_state.bass_gain);
@@ -3210,11 +3194,12 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
 
         /*
          * ----------------------------------------------------
-         * Master + post-Character AirPlay volume
+         * Preset master trim. AirPlay volume is applied after Stereo Spatial
+         * by the final I2S output stage.
          * ----------------------------------------------------
          */
-        yl *= master_linear * output_volume;
-        yr *= master_linear * output_volume;
+        yl *= master_linear;
+        yr *= master_linear;
 
 
         /*
@@ -3244,13 +3229,13 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
         yr = clampf_local(yr, -0.985f, 0.985f);
 
 
-        out[i * 2] = float_to_pcm16_tpdf(yl);
-        out[i * 2 + 1] = float_to_pcm16_tpdf(yr);
+        out[i * 2] = float_to_pcm16_rounded(yl);
+        out[i * 2 + 1] = float_to_pcm16_rounded(yr);
     }
 
 
-    s_output_state.volume_current = output_volume;
-    if (!dynamic_loudness_requested &&
+    if (fabsf(target_loudness_bass - 1.0f) < 0.0001f &&
+        fabsf(target_loudness_treble - 1.0f) < 0.0001f &&
         fabsf(s_output_state.bass_gain - 1.0f) < 0.0002f &&
         fabsf(s_output_state.treble_gain - 1.0f) < 0.0002f) {
         s_output_state.bass_gain = 1.0f;
