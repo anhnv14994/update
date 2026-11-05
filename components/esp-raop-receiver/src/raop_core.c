@@ -10,6 +10,8 @@
 #include <stdarg.h>
 
 static const char *TAG = "raop_core";
+#define MAX_FRAME_SIZE 2048U
+
 // The opaque handle consumers get back from raop_init()
 struct raop_handle_s {
     struct raop_ctx_s *raop_ctx;
@@ -184,9 +186,42 @@ static bool internal_cmd_cb(raop_internal_event_t event, ...) {
 // ---- Single instance support ----
 raop_handle_t *s_handle = NULL;
 
+static void apply_software_volume(
+    const uint8_t *data, size_t len, uint8_t *out, float volume)
+{
+    const int16_t *input = (const int16_t *)data;
+    int16_t *output = (int16_t *)out;
+    const size_t count = len / sizeof(int16_t);
+
+    for (size_t i = 0; i < count; ++i) {
+        const float scaled = (float)input[i] * volume;
+        const int32_t rounded = (int32_t)(
+            scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
+        output[i] = (int16_t)rounded;
+    }
+}
+
 static void internal_data_cb(const uint8_t *data, size_t len, uint32_t playtime) {
-    /* Always buffer full-scale decoded PCM. Volume is applied by DSP in float
-     * after Character/PEQ, avoiding a second PCM16 quantization before DSP. */
+    /*
+     * Hardware mode: preserve full-scale PCM for the consumer's final output
+     * stage. Software mode remains supported for other RAOP API users.
+     */
+    if (s_handle &&
+        s_handle->config.volume_mode == RAOP_VOLUME_SOFTWARE &&
+        s_handle->volume < 0.999999f) {
+        static uint8_t scaled[MAX_FRAME_SIZE];
+        if (len > sizeof(scaled)) {
+            ESP_LOGE(TAG, "RAOP software-volume frame too large: %u",
+                     (unsigned)len);
+            return;
+        }
+        apply_software_volume(data, len, scaled, s_handle->volume);
+        if (!audio_buffer_write(scaled, len, playtime)) {
+            ESP_LOGW(TAG, "Failed to buffer software-volume frame");
+        }
+        return;
+    }
+
     if (!audio_buffer_write(data, len, playtime)) {
         ESP_LOGW(TAG, "Failed to buffer audio frame");
     }
