@@ -211,6 +211,10 @@ typedef struct {
     float hf_slow_attack_alpha;
     float hf_slow_release_alpha;
     float hf_mix_alpha;
+    float output_volume_alpha;
+    float loudness_gain_alpha;
+    float loudness_low_alpha;
+    float loudness_high_alpha;
 } character_filter_coef_t;
 
 typedef struct {
@@ -266,12 +270,33 @@ static _Atomic bool s_character_hf_b_enabled = false;
 static _Atomic uint32_t s_character_hf_a_strength_pct = 0;
 static _Atomic uint32_t s_character_hf_b_strength_pct = 0;
 
+/* AirPlay volume is kept out of the PCM16 path until final output quantization. */
+static _Atomic uint32_t s_output_volume_q = 50000U; /* preserve RAOP's 0.05 startup level */
+static _Atomic bool s_dynamic_loudness_enabled = false;
+
+typedef struct {
+    float volume_current;
+    float low_lp[2];
+    float high_lp[2];
+    float bass_gain;
+    float treble_gain;
+    bool filter_initialized[2];
+} dsp_output_state_t;
+
+static dsp_output_state_t s_output_state = {
+    .volume_current = 0.05f,
+    .bass_gain = 1.0f,
+    .treble_gain = 1.0f,
+};
+
+/* Third diagnostic slot measures the optional HF refinement path. */
+#define DSP_CHARACTER_DIAG_SLOTS 3U
 /* Runtime-only diagnostic switches; deliberately excluded from NVS. */
 static _Atomic uint32_t s_character_diag_stage_mask = DSP_CHARACTER_STAGE_MASK_ALL;
 static _Atomic uint32_t s_character_diag_feature_mask = DSP_CHARACTER_FEATURE_MASK_ALL;
 static _Atomic uint32_t s_character_diag_blocks = 0;
-static _Atomic uint32_t s_character_diag_stage_total_us[CHARACTER_STAGE_COUNT] = {0};
-static _Atomic uint32_t s_character_diag_stage_max_us[CHARACTER_STAGE_COUNT] = {0};
+static _Atomic uint32_t s_character_diag_stage_total_us[DSP_CHARACTER_DIAG_SLOTS] = {0};
+static _Atomic uint32_t s_character_diag_stage_max_us[DSP_CHARACTER_DIAG_SLOTS] = {0};
 
 /* Audio-task-owned state used to clear stale histories after a test bypass. */
 static uint8_t s_character_active_stage_mask = 0;
@@ -295,20 +320,20 @@ static const dsp_preset_t s_factory_presets[DSP_NUM_PRESETS] = {
         .num_bands = 10,
 
         .bands = {
-            {   35.0f,  1.5f, 0.75f },
-            {   70.0f,  1.0f, 1.00f },
-            {  120.0f, -0.8f, 1.20f },
-            {  250.0f, -1.2f, 1.40f },
-            {  500.0f,  0.5f, 1.30f },
-            { 1200.0f,  1.2f, 1.40f },
-            { 2500.0f,  1.8f, 1.50f },
-            { 4500.0f,  0.8f, 1.60f },
-            { 8000.0f, -0.5f, 1.20f },
-            { 14000.0f, 1.5f, 0.70f },
+            {   35.0f,  1.0f, 0.75f },
+            {   70.0f,  0.8f, 1.00f },
+            {  120.0f, -0.5f, 1.00f },
+            {  250.0f, -1.2f, 0.80f },
+            {  500.0f,  0.2f, 1.00f },
+            { 1200.0f,  0.7f, 0.70f },
+            { 2500.0f,  0.5f, 0.70f },
+            { 4500.0f, -0.5f, 0.80f },
+            { 8000.0f, -0.3f, 0.80f },
+            { 14000.0f, 0.3f, 0.70f },
         },
 
         .shelf_freq = 16000.0f,
-        .shelf_gain_db = 0.8f,
+        .shelf_gain_db = 0.2f,
         .master_gain_db = -6.0f,
     },
 
@@ -831,9 +856,11 @@ static void rebuild_character_filters(void)
     character_filter_coef_t next;
     memset(&next, 0, sizeof(next));
 
-    /* V5: Stage 1 body (90–650 Hz), Stage 2 vocal core (320 Hz–2.1 kHz). */
-    static const float source_hp[CHARACTER_STAGE_COUNT] = { 90.0f, 320.0f };
-    static const float source_lp[CHARACTER_STAGE_COUNT] = { 650.0f, 2100.0f };
+    /* V6.7: narrower harmonic source bands reduce broad-band IM spill.
+     * Stage 1 body: 80–320 Hz; Stage 2 vocal core: 250–1400 Hz.
+     * Each path remains HPF2 + LPF2; no additional biquad cascade is added. */
+    static const float source_hp[CHARACTER_STAGE_COUNT] = { 80.0f, 250.0f };
+    static const float source_lp[CHARACTER_STAGE_COUNT] = { 320.0f, 1400.0f };
     static const float mean_square_ms[CHARACTER_STAGE_COUNT] = { 20.0f, 18.0f };
 
     for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
@@ -857,6 +884,16 @@ static void rebuild_character_filters(void)
     next.hf_slow_release_alpha = envelope_alpha(120.0f);
     next.hf_mix_alpha = 1.0f - expf(
         -1.0f / (0.008f * DSP_SAMPLE_RATE_HZ));
+
+    /* Output gain moves smoothly in 8 ms; loudness shelves settle in 50 ms. */
+    next.output_volume_alpha = 1.0f - expf(
+        -1.0f / (0.008f * DSP_SAMPLE_RATE_HZ));
+    next.loudness_gain_alpha = 1.0f - expf(
+        -1.0f / (0.050f * DSP_SAMPLE_RATE_HZ));
+    next.loudness_low_alpha = 1.0f - expf(
+        -2.0f * (float)M_PI * 110.0f / DSP_SAMPLE_RATE_HZ);
+    next.loudness_high_alpha = 1.0f - expf(
+        -2.0f * (float)M_PI * 9000.0f / DSP_SAMPLE_RATE_HZ);
 
     if (s_lock)
         xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -1479,6 +1516,11 @@ esp_err_t dsp_engine_init(void)
 
     rebuild_character_filters();
     reset_character_states();
+    memset(&s_output_state, 0, sizeof(s_output_state));
+    s_output_state.volume_current =
+        (float)atomic_load_explicit(&s_output_volume_q, memory_order_relaxed) * 0.000001f;
+    s_output_state.bass_gain = 1.0f;
+    s_output_state.treble_gain = 1.0f;
 
 
     ESP_LOGI(
@@ -1605,6 +1647,44 @@ bool dsp_engine_get_enabled(void)
 
 
     return enabled;
+}
+
+
+/* ============================================================
+ * Post-Character AirPlay volume + Dynamic Loudness
+ * ============================================================ */
+
+esp_err_t dsp_engine_set_output_volume(float volume)
+{
+    if (!isfinite(volume))
+        return ESP_ERR_INVALID_ARG;
+
+    volume = clampf_local(volume, 0.0f, 1.0f);
+    const uint32_t q = (uint32_t)(volume * 1000000.0f + 0.5f);
+    atomic_store_explicit(&s_output_volume_q, q, memory_order_release);
+    return ESP_OK;
+}
+
+float dsp_engine_get_output_volume(void)
+{
+    return (float)atomic_load_explicit(
+        &s_output_volume_q, memory_order_acquire) * 0.000001f;
+}
+
+esp_err_t dsp_engine_set_dynamic_loudness(bool enabled)
+{
+    const bool previous = atomic_exchange_explicit(
+        &s_dynamic_loudness_enabled, enabled, memory_order_acq_rel);
+    if (previous != enabled) {
+        ESP_LOGI(TAG, "Dynamic Loudness: %s (session only)", enabled ? "ON" : "OFF");
+    }
+    return ESP_OK;
+}
+
+bool dsp_engine_get_dynamic_loudness(void)
+{
+    return atomic_load_explicit(
+        &s_dynamic_loudness_enabled, memory_order_acquire);
 }
 
 
@@ -2286,7 +2366,7 @@ esp_err_t dsp_engine_set_character_diagnostics(uint8_t stage_mask,
 
     /* Start a fresh measurement window after every A/B change. */
     atomic_store_explicit(&s_character_diag_blocks, 0, memory_order_relaxed);
-    for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+    for (unsigned stage = 0; stage < DSP_CHARACTER_DIAG_SLOTS; ++stage) {
         atomic_store_explicit(
             &s_character_diag_stage_total_us[stage], 0, memory_order_relaxed);
         atomic_store_explicit(
@@ -2310,7 +2390,7 @@ esp_err_t dsp_engine_get_character_diagnostics(dsp_character_diagnostics_t *out)
         &s_character_diag_blocks, 0, memory_order_acq_rel);
     out->cpu_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
 
-    for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
+    for (unsigned stage = 0; stage < DSP_CHARACTER_DIAG_SLOTS; ++stage) {
         const uint32_t total_us = atomic_exchange_explicit(
             &s_character_diag_stage_total_us[stage], 0, memory_order_acq_rel);
         out->stage_avg_us[stage] = out->blocks ? total_us / out->blocks : 0;
