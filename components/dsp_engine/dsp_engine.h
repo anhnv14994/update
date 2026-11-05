@@ -192,6 +192,10 @@ esp_err_t dsp_engine_get_character(dsp_character_t *out);
 esp_err_t dsp_engine_set_character_profile(dsp_character_mode_t mode);
 esp_err_t dsp_engine_save_character(void);
 
+/* Session-only high-frequency refinement switches; never stored in NVS. */
+esp_err_t dsp_engine_set_character_hf(bool a_enabled, bool b_enabled);
+esp_err_t dsp_engine_get_character_hf(bool *a_enabled, bool *b_enabled);
+
 #ifdef __cplusplus
 }
 #endif
