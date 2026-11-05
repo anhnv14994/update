@@ -290,30 +290,18 @@ void app_main(void)
             vTaskDelay(pdMS_TO_TICKS(500));
             retry++;
 
-            if (retry % 4 == 0) {  // Log every 2 seconds
-                ESP_LOGI(TAG, "Still waiting for IP... (%d/60)", retry/2);
-                // Manually check if IP was assigned
-                esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-                if (netif) {
-                    esp_netif_ip_info_t ip_info;
-                    if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK && ip_info.ip.addr != 0) {
-                        ESP_LOGE(TAG, "DHCP assigned IP but event never fired! IP: " IPSTR, IP2STR(&ip_info.ip));
-                        // Manually set connected state
-                        // We need to add a function to do this
-                        break;
-                    }
-                }
+            /* GOT_IP can arrive while this task sleeps; re-check before logging. */
+            if (wifi_manager_is_connected()) {
+                break;
             }
 
-            if (!wifi_manager_is_connected()) {
-                esp_netif_ip_info_t ip_info;
-                esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-                if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
-                    if (ip_info.ip.addr != 0) {
-                        ESP_LOGI(TAG, "DHCP assigned IP but event didn't fire! IP: " IPSTR, IP2STR(&ip_info.ip));
-                    }
-                }
+            if (retry % 4 == 0) {  // Log every 2 seconds; timeout is 120 seconds.
+                ESP_LOGI(TAG, "Still waiting for IP... (%d/120)", retry / 2);
             }
+        }
+
+        if (!wifi_manager_is_connected()) {
+            ESP_LOGW(TAG, "WiFi not connected after 120 seconds; background reconnect remains active");
         }
     }
 
@@ -335,6 +323,8 @@ void app_main(void)
             ESP_LOGE(TAG, "DSP API registration failed: %s", esp_err_to_name(dsp_err));
         }
     }
+    bool airplay_started = false;
+
     // Wait for WiFi connection (give it some time)
     ESP_LOGI(TAG, "Waiting for network...");
     vTaskDelay(pdMS_TO_TICKS(2000));
@@ -350,8 +340,9 @@ void app_main(void)
 
             // Now start AirPlay receiver
             start_airplay_receiver(&app_config);
+            airplay_started = (raop_handle != NULL);
         } else {
-            ESP_LOGE(TAG, "Failed to connect to WiFi after 30 seconds");
+            ESP_LOGW(TAG, "WiFi is not connected yet; reconnect will continue in background");
         }
     }
 
@@ -366,6 +357,18 @@ void app_main(void)
     // Main loop - could add status monitoring here
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(10000));
+
+        /*
+         * A delayed WiFi recovery must still bring AirPlay online. Previously,
+         * missing the initial 120-second window left the receiver stopped forever.
+         */
+        if (!airplay_started && !wifi_manager_is_ap_mode() &&
+            wifi_manager_is_connected()) {
+            ESP_LOGI(TAG, "WiFi recovered after startup wait; starting AirPlay...");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            start_airplay_receiver(&app_config);
+            airplay_started = (raop_handle != NULL);
+        }
 
         // Periodic status log
         ESP_LOGI(TAG, "Status: WiFi=%s, IP=%s",
