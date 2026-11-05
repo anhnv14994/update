@@ -127,7 +127,7 @@ void i2s_output_write(const uint8_t *data, size_t len)
         ESP_LOGW(TAG, "I2S not initialized");
         return;
     }
-    if (!data || len == 0 || (len & 0x01U) != 0) {
+    if (!data || len == 0 || (len & 0x03U) != 0) {
         ESP_LOGW(TAG, "Invalid I2S PCM buffer: %u bytes", (unsigned)len);
         return;
     }
