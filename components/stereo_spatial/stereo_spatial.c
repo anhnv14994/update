@@ -901,17 +901,15 @@ void IRAM_ATTR stereo_spatial_process_i16(
         float r = m - s;
 
         /*
-        * Safety clip.
+        * Linked safety ceiling. Keep L/R ratio intact if the
+        * Side EQ or decorrelator creates an over-range peak.
         */
-        if (l > 0.999969f)
-            l = 0.999969f;
-        else if (l < -1.0f)
-            l = -1.0f;
-
-        if (r > 0.999969f)
-            r = 0.999969f;
-        else if (r < -1.0f)
-            r = -1.0f;
+        const float peak = fmaxf(fabsf(l), fabsf(r));
+        if (peak > 0.999969f) {
+            const float linked_gain = 0.999969f / peak;
+            l *= linked_gain;
+            r *= linked_gain;
+        }
 
         buffer[i * 2 + 0] =
             float_to_i16(l * 32768.0f);
