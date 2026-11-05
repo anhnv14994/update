@@ -2500,10 +2500,13 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
         &s_character_hf_a_strength_pct, memory_order_acquire) * 0.01f;
     const float character_hf_b_strength = (float)atomic_load_explicit(
         &s_character_hf_b_strength_pct, memory_order_acquire) * 0.01f;
-    const float target_output_volume = (float)atomic_load_explicit(
-        &s_output_volume_q, memory_order_acquire) * 0.000001f;
     const bool dynamic_loudness_requested = atomic_load_explicit(
         &s_dynamic_loudness_enabled, memory_order_acquire);
+    /* Avoid even the volume atomic read when this optional feature is OFF. */
+    const float target_output_volume = dynamic_loudness_requested
+        ? (float)atomic_load_explicit(
+            &s_output_volume_q, memory_order_acquire) * 0.000001f
+        : 1.0f;
 
     /* Relative output-level estimate: AirPlay gain x active preset master.
      * This is not SPL calibration; the feature remains OFF by default. */
