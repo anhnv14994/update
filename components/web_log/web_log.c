@@ -23,6 +23,14 @@ static size_t s_write_pos = 0;
 static bool s_filled = false;
 static portMUX_TYPE s_ring_lock = portMUX_INITIALIZER_UNLOCKED;
 
+/* Allocate the HTTP snapshot once at boot, never inside a request handler.
+ * The HTTP server processes URI handlers on one server task, so this buffer
+ * is serialized by the server and needs no extra lock. */
+#define LOG_HTTP_FALLBACK_SIZE 4096U
+static char s_http_snapshot_fallback[LOG_HTTP_FALLBACK_SIZE + 1U];
+static char *s_http_snapshot = s_http_snapshot_fallback;
+static size_t s_http_snapshot_capacity = LOG_HTTP_FALLBACK_SIZE;
+
 static vprintf_like_t s_prev_vprintf = NULL;
 
 static void ring_write(const char *data, size_t len)
@@ -112,10 +120,23 @@ esp_err_t web_log_init(void)
             return ESP_ERR_NO_MEM;
         }
     }
+    /* Keep a reusable response snapshot so /api/log never mallocs per request. */
+    char *snapshot = heap_caps_malloc(
+        LOG_RING_SIZE + 1U, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (snapshot) {
+        s_http_snapshot = snapshot;
+        s_http_snapshot_capacity = LOG_RING_SIZE;
+    } else {
+        s_http_snapshot = s_http_snapshot_fallback;
+        s_http_snapshot_capacity = LOG_HTTP_FALLBACK_SIZE;
+    }
+
     s_write_pos = 0;
     s_filled = false;
     s_prev_vprintf = esp_log_set_vprintf(log_capture_vprintf);
-    ESP_LOGI(TAG, "Web log capture active (%d KB ring buffer)", LOG_RING_SIZE / 1024);
+    ESP_LOGI(TAG, "Web log capture active: ring=%u KB, HTTP snapshot=%u KB",
+             (unsigned)(s_ring_capacity / 1024U),
+             (unsigned)(s_http_snapshot_capacity / 1024U));
     return ESP_OK;
 }
 
@@ -124,25 +145,25 @@ esp_err_t web_log_init(void)
 // ---------------------------------------------------------------------------
 static esp_err_t api_log_get_handler(httpd_req_t *req)
 {
-    // Prefer PSRAM for the response snapshot; if unavailable, return the newest 4 KB.
-    size_t out_capacity = LOG_RING_SIZE;
-    char *buf = heap_caps_malloc(out_capacity + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!buf) {
-        out_capacity = 4096;
-        buf = malloc(out_capacity + 1);
-    }
-    if (!buf) {
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-    size_t n = ring_read_tail(buf, out_capacity);
+    /* No per-request allocation: avoid HTTP 500 when the heap is fragmented. */
+    char *buf = s_http_snapshot ? s_http_snapshot : s_http_snapshot_fallback;
+    const size_t capacity = s_http_snapshot
+        ? s_http_snapshot_capacity : LOG_HTTP_FALLBACK_SIZE;
+
+    const size_t n = ring_read_tail(buf, capacity);
     buf[n] = '\0';
 
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    httpd_resp_send(req, buf, n);
-    free(buf);
-    return ESP_OK;
+    const esp_err_t err = httpd_resp_send(req, buf, n);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "/api/log response send failed: %s (ring=%u, free_internal=%u, largest_internal=%u)",
+                 esp_err_to_name(err),
+                 (unsigned)s_ring_capacity,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    }
+    return err;
 }
 
 static esp_err_t api_log_clear_handler(httpd_req_t *req)
