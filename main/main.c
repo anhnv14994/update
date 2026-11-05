@@ -29,10 +29,10 @@ static httpd_handle_t web_server = NULL;
 static raop_handle_t *raop_handle = NULL;
 static struct udp_pcb *dns_pcb = NULL;
 
-// PCM tap runs PEQ + Analog Character + subsonic HPF + post-Character float
-// volume/master in the DSP task. Stereo Spatial then runs before I2S output.
-// RAOP now buffers decoded full-scale PCM so AirPlay volume does not quantize
-// the signal before Character processing.
+// PCM tap runs PEQ + Analog Character + subsonic HPF + preset master in float.
+// Stereo Spatial follows; final AirPlay volume + TPDF dither are applied in
+// i2s_output_write(), after Spatial and immediately before I2S transmission.
+// RAOP buffers decoded full-scale PCM so volume does not precede Character.
 stereo_spatial_ctx_t *g_stereo_ctx = NULL;
 
 
