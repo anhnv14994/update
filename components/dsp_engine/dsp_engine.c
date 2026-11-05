@@ -203,6 +203,9 @@ typedef struct {
     character_stage_filter_t stage[CHARACTER_STAGE_COUNT];
     /* The identical residual HPF is shared after summing both stage outputs. */
     biquad_coef_t residual_hpf;
+    /* Shared first-order split points for the optional 2–5 kHz / 5–10 kHz paths. */
+    float hf_lp_alpha[3]; /* 2 kHz, 5 kHz, 10 kHz */
+    float hf_mix_alpha;   /* 8 ms click-safe enable/disable ramp */
 } character_filter_coef_t;
 
 typedef struct {
@@ -239,6 +242,19 @@ typedef struct {
 static character_filter_coef_t s_character_filters;
 static character_state_t s_character_state;
 static biquad_state_t s_character_residual_hpf[2];
+
+/* Audio-task-owned state; no allocation, locks, or NVS writes in the PCM path. */
+typedef struct {
+    float lp_2k[2];
+    float lp_5k[2];
+    float lp_10k[2];
+    float prev_band_b[2];
+    float mix_a;
+    float mix_b;
+} character_hf_state_t;
+static character_hf_state_t s_character_hf_state;
+static _Atomic bool s_character_hf_a_enabled = false;
+static _Atomic bool s_character_hf_b_enabled = false;
 
 /* Runtime-only diagnostic switches; deliberately excluded from NVS. */
 static _Atomic uint32_t s_character_diag_stage_mask = DSP_CHARACTER_STAGE_MASK_ALL;
@@ -802,6 +818,15 @@ static void rebuild_character_filters(void)
 
     calc_butterworth_hpf_q(DSP_SAMPLE_RATE_HZ, 15.0f,
                            0.70710678118f, &next.residual_hpf);
+
+    /* Shared low-cost crossover bank: A = LP(5k)-LP(2k), B = LP(10k)-LP(5k). */
+    static const float hf_split_hz[3] = { 2000.0f, 5000.0f, 10000.0f };
+    for (unsigned i = 0; i < 3; ++i) {
+        next.hf_lp_alpha[i] = 1.0f - expf(
+            -2.0f * (float)M_PI * hf_split_hz[i] / DSP_SAMPLE_RATE_HZ);
+    }
+    next.hf_mix_alpha = 1.0f - expf(
+        -1.0f / (0.008f * DSP_SAMPLE_RATE_HZ));
 
     if (s_lock)
         xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -2167,6 +2192,38 @@ esp_err_t dsp_engine_save_character(void)
 
 
 /* ============================================================
+ * Optional HF refinement controls (runtime only; never persisted)
+ * ============================================================ */
+
+esp_err_t dsp_engine_set_character_hf(bool a_enabled, bool b_enabled)
+{
+    const bool old_a = atomic_exchange_explicit(
+        &s_character_hf_a_enabled, a_enabled, memory_order_acq_rel);
+    const bool old_b = atomic_exchange_explicit(
+        &s_character_hf_b_enabled, b_enabled, memory_order_acq_rel);
+
+    if (old_a != a_enabled) {
+        ESP_LOGI(TAG, "Character HF A (2-5 kHz Presence): %s",
+                 a_enabled ? "ON" : "OFF");
+    }
+    if (old_b != b_enabled) {
+        ESP_LOGI(TAG, "Character HF B (5-10 kHz Transient): %s",
+                 b_enabled ? "ON" : "OFF");
+    }
+    return ESP_OK;
+}
+
+esp_err_t dsp_engine_get_character_hf(bool *a_enabled, bool *b_enabled)
+{
+    if (!a_enabled || !b_enabled)
+        return ESP_ERR_INVALID_ARG;
+    *a_enabled = atomic_load_explicit(&s_character_hf_a_enabled, memory_order_acquire);
+    *b_enabled = atomic_load_explicit(&s_character_hf_b_enabled, memory_order_acquire);
+    return ESP_OK;
+}
+
+
+/* ============================================================
  * Character diagnostics (runtime only; never persisted)
  * ============================================================ */
 
@@ -2302,6 +2359,12 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
     character = cached.character;
     character_enabled = cached.character_enabled;
     character_filters = cached.character_filters;
+
+    /* Session-only HF switches are atomic; read once per block. */
+    const bool character_hf_a_requested = atomic_load_explicit(
+        &s_character_hf_a_enabled, memory_order_acquire);
+    const bool character_hf_b_requested = atomic_load_explicit(
+        &s_character_hf_b_enabled, memory_order_acquire);
 
 
     /*
@@ -2770,6 +2833,52 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
                     memset(s_character_residual_hpf, 0,
                            sizeof(s_character_residual_hpf));
                     s_character_active_stage_mask = 0;
+                }
+            }
+        }
+
+        /*
+         * ----------------------------------------------------
+         * Analog Character HF refinement — optional A/B paths
+         * ----------------------------------------------------
+         * One shared 3-point first-order crossover bank per channel:
+         * A = LP(5 kHz) - LP(2 kHz): subtle cubic presence/detail.
+         * B = LP(10 kHz) - LP(5 kHz): restrained transient lift.
+         * No extra biquad cascade, ADAA, envelope detector, or allocation.
+         * Both paths are session-only and independently switchable.
+         */
+        {
+            character_hf_state_t *hf = &s_character_hf_state;
+            const float target_a = character_hf_a_requested ? 1.0f : 0.0f;
+            const float target_b = character_hf_b_requested ? 1.0f : 0.0f;
+            hf->mix_a += character_filters.hf_mix_alpha * (target_a - hf->mix_a);
+            hf->mix_b += character_filters.hf_mix_alpha * (target_b - hf->mix_b);
+
+            if (hf->mix_a > 0.000001f || hf->mix_b > 0.000001f ||
+                character_hf_a_requested || character_hf_b_requested) {
+                for (unsigned ch = 0; ch < 2; ++ch) {
+                    const float x = (ch == 0) ? yl : yr;
+                    hf->lp_2k[ch] += character_filters.hf_lp_alpha[0] *
+                        (x - hf->lp_2k[ch]);
+                    hf->lp_5k[ch] += character_filters.hf_lp_alpha[1] *
+                        (x - hf->lp_5k[ch]);
+                    hf->lp_10k[ch] += character_filters.hf_lp_alpha[2] *
+                        (x - hf->lp_10k[ch]);
+
+                    const float band_a = hf->lp_5k[ch] - hf->lp_2k[ch];
+                    const float band_b = hf->lp_10k[ch] - hf->lp_5k[ch];
+                    const float cubic_a = band_a * band_a * band_a;
+                    const float transient_b = band_b - hf->prev_band_b[ch];
+                    hf->prev_band_b[ch] = band_b;
+
+                    float y = x;
+                    if (hf->mix_a > 0.000001f)
+                        y += hf->mix_a * 0.55f * cubic_a;
+                    if (hf->mix_b > 0.000001f)
+                        y += hf->mix_b * 0.035f * transient_b;
+
+                    if (ch == 0) yl = y;
+                    else yr = y;
                 }
             }
         }
