@@ -263,9 +263,13 @@ static cJSON *build_state_json(void)
         cJSON_AddNumberToObject(ch, "dynamic_saturation_pct",
                                 character.dynamic_saturation_pct);
         bool hf_a_enabled = false, hf_b_enabled = false;
-        (void)dsp_engine_get_character_hf(&hf_a_enabled, &hf_b_enabled);
+        uint8_t hf_a_strength_pct = 0, hf_b_strength_pct = 0;
+        (void)dsp_engine_get_character_hf(
+            &hf_a_enabled, &hf_b_enabled, &hf_a_strength_pct, &hf_b_strength_pct);
         cJSON_AddBoolToObject(ch, "hf_a_enabled", hf_a_enabled);
         cJSON_AddBoolToObject(ch, "hf_b_enabled", hf_b_enabled);
+        cJSON_AddNumberToObject(ch, "hf_a_strength_pct", hf_a_strength_pct);
+        cJSON_AddNumberToObject(ch, "hf_b_strength_pct", hf_b_strength_pct);
         cJSON_AddItemToObject(root, "character", ch);
     }
 
@@ -662,23 +666,44 @@ static esp_err_t api_character_handler(httpd_req_t *req)
 
     cJSON *hf_a_item = cJSON_GetObjectItem(body, "hf_a_enabled");
     cJSON *hf_b_item = cJSON_GetObjectItem(body, "hf_b_enabled");
+    cJSON *hf_a_strength_item = cJSON_GetObjectItem(body, "hf_a_strength_pct");
+    cJSON *hf_b_strength_item = cJSON_GetObjectItem(body, "hf_b_strength_pct");
     const bool update_hf_a = cJSON_IsBool(hf_a_item);
     const bool update_hf_b = cJSON_IsBool(hf_b_item);
+    const bool update_hf_a_strength = cJSON_IsNumber(hf_a_strength_item);
+    const bool update_hf_b_strength = cJSON_IsNumber(hf_b_strength_item);
+
+    if ((hf_a_strength_item && (!cJSON_IsNumber(hf_a_strength_item) ||
+            hf_a_strength_item->valuedouble < 0.0 || hf_a_strength_item->valuedouble > 100.0)) ||
+        (hf_b_strength_item && (!cJSON_IsNumber(hf_b_strength_item) ||
+            hf_b_strength_item->valuedouble < 0.0 || hf_b_strength_item->valuedouble > 100.0))) {
+        cJSON_Delete(body);
+        return send_error_json(req, 400, "HF strength must be between 0 and 100 percent");
+    }
+
     const bool hf_a_value = update_hf_a && cJSON_IsTrue(hf_a_item);
     const bool hf_b_value = update_hf_b && cJSON_IsTrue(hf_b_item);
+    const uint8_t hf_a_strength_value = update_hf_a_strength
+        ? (uint8_t)lround(hf_a_strength_item->valuedouble) : 0U;
+    const uint8_t hf_b_strength_value = update_hf_b_strength
+        ? (uint8_t)lround(hf_b_strength_item->valuedouble) : 0U;
 
     cJSON_Delete(body);
 
     if (dsp_engine_set_character(&current) != ESP_OK)
         return send_error_json(req, 400, "invalid character parameters");
 
-    if (update_hf_a || update_hf_b) {
+    if (update_hf_a || update_hf_b || update_hf_a_strength || update_hf_b_strength) {
         bool old_a = false, old_b = false;
-        (void)dsp_engine_get_character_hf(&old_a, &old_b);
+        uint8_t old_a_strength = 0, old_b_strength = 0;
+        (void)dsp_engine_get_character_hf(
+            &old_a, &old_b, &old_a_strength, &old_b_strength);
         if (dsp_engine_set_character_hf(
                 update_hf_a ? hf_a_value : old_a,
-                update_hf_b ? hf_b_value : old_b) != ESP_OK) {
-            return send_error_json(req, 500, "cannot update HF refinement switches");
+                update_hf_b ? hf_b_value : old_b,
+                update_hf_a_strength ? hf_a_strength_value : old_a_strength,
+                update_hf_b_strength ? hf_b_strength_value : old_b_strength) != ESP_OK) {
+            return send_error_json(req, 500, "cannot update HF refinement controls");
         }
     }
 
