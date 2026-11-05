@@ -2518,9 +2518,9 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
             memset(&s_character_hf_state, 0, sizeof(s_character_hf_state));
 
         /*
-         * Keep the fixed subsonic protection active even when the user
-         * bypasses PEQ/Analog Character. The legacy API uses s_scratch;
-         * the real-time pipeline continues to run in-place.
+         * Keep subsonic protection, post-Character volume, output master
+         * trim and optional low-volume compensation active in global bypass.
+         * The real-time pipeline continues to run in-place.
          */
         int16_t *bypass_out = (int16_t *)(pcm_out ? pcm_out : s_scratch);
         if (!pcm_out) {
@@ -2902,8 +2902,8 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
          * ----------------------------------------------------
          * Analog Character V5.1 Lite — two-stage parallel model
          * ----------------------------------------------------
-         * Stage 1: 90–650 Hz, H2 body.
-         * Stage 2: 320 Hz–2.1 kHz, H2 + controllable H3.
+         * Stage 1: 80–320 Hz, H2 body.
+         * Stage 2: 250 Hz–1.4 kHz, H2 + controllable H3.
          *
          * Harmonic Interaction coordinates Stage 2 against Stage 1 energy.
          * Dynamic Saturation adds a bounded level-dependent harmonic mix.
