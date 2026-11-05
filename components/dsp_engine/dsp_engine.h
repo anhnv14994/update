@@ -79,7 +79,7 @@ typedef struct {
     uint32_t cpu_mhz;
 } dsp_character_diagnostics_t;
 
-/* Diagnostic masks are volatile and are not written to NVS. */
+/* Diagnostic masks are restored and saved with each preset; timing counters are runtime-only. */
 esp_err_t dsp_engine_set_character_diagnostics(uint8_t stage_mask,
                                                uint8_t feature_mask);
 esp_err_t dsp_engine_get_character_diagnostics(dsp_character_diagnostics_t *out);
