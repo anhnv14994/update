@@ -262,6 +262,10 @@ static cJSON *build_state_json(void)
                               character.dynamic_saturation_enabled);
         cJSON_AddNumberToObject(ch, "dynamic_saturation_pct",
                                 character.dynamic_saturation_pct);
+        bool hf_a_enabled = false, hf_b_enabled = false;
+        (void)dsp_engine_get_character_hf(&hf_a_enabled, &hf_b_enabled);
+        cJSON_AddBoolToObject(ch, "hf_a_enabled", hf_a_enabled);
+        cJSON_AddBoolToObject(ch, "hf_b_enabled", hf_b_enabled);
         cJSON_AddItemToObject(root, "character", ch);
     }
 
@@ -656,10 +660,27 @@ static esp_err_t api_character_handler(httpd_req_t *req)
     if (v && cJSON_IsNumber(v))
         current.dynamic_saturation_pct = (float)v->valuedouble;
 
+    cJSON *hf_a_item = cJSON_GetObjectItem(body, "hf_a_enabled");
+    cJSON *hf_b_item = cJSON_GetObjectItem(body, "hf_b_enabled");
+    const bool update_hf_a = cJSON_IsBool(hf_a_item);
+    const bool update_hf_b = cJSON_IsBool(hf_b_item);
+    const bool hf_a_value = update_hf_a && cJSON_IsTrue(hf_a_item);
+    const bool hf_b_value = update_hf_b && cJSON_IsTrue(hf_b_item);
+
     cJSON_Delete(body);
 
     if (dsp_engine_set_character(&current) != ESP_OK)
         return send_error_json(req, 400, "invalid character parameters");
+
+    if (update_hf_a || update_hf_b) {
+        bool old_a = false, old_b = false;
+        (void)dsp_engine_get_character_hf(&old_a, &old_b);
+        if (dsp_engine_set_character_hf(
+                update_hf_a ? hf_a_value : old_a,
+                update_hf_b ? hf_b_value : old_b) != ESP_OK) {
+            return send_error_json(req, 500, "cannot update HF refinement switches");
+        }
+    }
 
     return send_state(req);
 }
