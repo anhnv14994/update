@@ -214,6 +214,8 @@ typedef struct {
     float hf_slow_release_alpha;
     float hf_mix_alpha;
     float loudness_gain_alpha;
+    float loudness_sub_alpha;
+    float loudness_mid_alpha;
     float loudness_low_alpha;
     float loudness_high_alpha;
 } character_filter_coef_t;
@@ -272,19 +274,26 @@ static _Atomic uint32_t s_character_hf_a_strength_pct = 0;
 static _Atomic uint32_t s_character_hf_b_strength_pct = 0;
 
 /* AirPlay volume is kept out of the PCM16 path until final output quantization. */
-static _Atomic uint32_t s_output_volume_q = 50000U; /* preserve RAOP's 0.05 startup level */
+static _Atomic uint32_t s_output_volume_q = 50000U; /* Final linear gain, applied by I2S. */
+static _Atomic uint32_t s_airplay_volume_control_q = 50000U; /* RAOP slider: 0..1 over -30..0 dB. */
 static _Atomic bool s_dynamic_loudness_enabled = false;
 
 typedef struct {
-    float low_lp[2];
+    float sub_lp[2];   /* 35 Hz low-pass: sub band below 35 Hz. */
+    float mid_lp[2];   /* 50 Hz low-pass: 35..50 Hz is mid_lp - sub_lp. */
+    float low_lp[2];   /* 110 Hz low-pass: 50..110 Hz is low_lp - mid_lp. */
     float high_lp[2];
-    float bass_gain;
+    float sub_gain;
+    float mid_gain;
+    float bass_gain;   /* 50..110 Hz compensation. */
     float treble_gain;
     float master_gain;
     bool filter_initialized[2];
 } dsp_output_state_t;
 
 static dsp_output_state_t s_output_state = {
+    .sub_gain = 1.0f,
+    .mid_gain = 1.0f,
     .bass_gain = 1.0f,
     .treble_gain = 1.0f,
     .master_gain = 1.0f,
@@ -457,8 +466,8 @@ static inline int16_t float_to_pcm16_rounded(float sample)
     if (!isfinite(sample))
         return 0;
 
-    /* Do not dither values that are far below one PCM16 quantization step. */
-    if (fabsf(sample) < 1.0e-7f)
+    /* Sub-half-LSB silence gate: prevent dither from turning inaudible tails into noise. */
+    if (fabsf(sample) < (0.5f / 32768.0f))
         return 0;
 
     /* One TPDF-LSB peak dither before this PCM16 quantization boundary. */
@@ -984,9 +993,13 @@ static void rebuild_character_filters(void)
     next.hf_mix_alpha = 1.0f - expf(
         -1.0f / (0.008f * DSP_SAMPLE_RATE_HZ));
 
-    /* Loudness shelves settle in 50 ms. Final volume ramp lives in I2S. */
+    /* Smooth gain targets over 50 ms; low-pass split points are calculated once. */
     next.loudness_gain_alpha = 1.0f - expf(
         -1.0f / (0.050f * DSP_SAMPLE_RATE_HZ));
+    next.loudness_sub_alpha = 1.0f - expf(
+        -2.0f * (float)M_PI * 35.0f / DSP_SAMPLE_RATE_HZ);
+    next.loudness_mid_alpha = 1.0f - expf(
+        -2.0f * (float)M_PI * 50.0f / DSP_SAMPLE_RATE_HZ);
     next.loudness_low_alpha = 1.0f - expf(
         -2.0f * (float)M_PI * 110.0f / DSP_SAMPLE_RATE_HZ);
     next.loudness_high_alpha = 1.0f - expf(
@@ -1017,6 +1030,8 @@ static void reset_stream_processing_state(void)
     memset(s_subsonic_hpf_state, 0, sizeof(s_subsonic_hpf_state));
     reset_character_states();
     memset(&s_output_state, 0, sizeof(s_output_state));
+    s_output_state.sub_gain = 1.0f;
+    s_output_state.mid_gain = 1.0f;
     s_output_state.bass_gain = 1.0f;
     s_output_state.treble_gain = 1.0f;
     s_output_state.master_gain = 1.0f;
@@ -1805,6 +1820,23 @@ float dsp_engine_get_output_volume(void)
 {
     return (float)atomic_load_explicit(
         &s_output_volume_q, memory_order_acquire) * 0.000001f;
+}
+
+esp_err_t dsp_engine_set_airplay_volume(float volume)
+{
+    if (!isfinite(volume))
+        return ESP_ERR_INVALID_ARG;
+
+    volume = clampf_local(volume, 0.0f, 1.0f);
+    const uint32_t q = (uint32_t)(volume * 1000000.0f + 0.5f);
+    atomic_store_explicit(&s_airplay_volume_control_q, q, memory_order_release);
+    return ESP_OK;
+}
+
+float dsp_engine_get_airplay_volume(void)
+{
+    return (float)atomic_load_explicit(
+        &s_airplay_volume_control_q, memory_order_acquire) * 0.000001f;
 }
 
 esp_err_t dsp_engine_set_dynamic_loudness(bool enabled)
@@ -2665,15 +2697,21 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
         &s_character_hf_b_strength_pct, memory_order_acquire) * 0.01f;
     const bool dynamic_loudness_requested = atomic_load_explicit(
         &s_dynamic_loudness_enabled, memory_order_acquire);
-    /* Avoid even the volume atomic read when this optional feature is OFF. */
+    /* Keep both domains: linear gain is used for headroom estimation, RAOP slider
+     * position drives the volume-dependent bass contour. Neither value is applied
+     * to PCM here; the one and only AirPlay gain remains in the final I2S stage. */
     const float target_output_volume = dynamic_loudness_requested
         ? (float)atomic_load_explicit(
             &s_output_volume_q, memory_order_acquire) * 0.000001f
         : 1.0f;
+    const float target_airplay_control_volume = dynamic_loudness_requested
+        ? (float)atomic_load_explicit(
+            &s_airplay_volume_control_q, memory_order_acquire) * 0.000001f
+        : 1.0f;
 
-    /* Relative output-level estimate: AirPlay gain x active preset master.
-     * This is not SPL calibration; the feature remains OFF by default. */
-    float target_loudness_bass = 1.0f;
+    float target_loudness_sub = 1.0f;
+    float target_loudness_mid = 1.0f;
+    float target_loudness_bass = 1.0f; /* 50..110 Hz */
     float target_loudness_treble = 1.0f;
     if (dynamic_loudness_requested && target_output_volume > 0.0001f) {
         const float bass_effective_gain = fmaxf(
@@ -2686,10 +2724,35 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
             fmaxf(-6.0f - 20.0f * log10f(bass_effective_gain), 0.0f);
         const float treble_below_reference_db =
             fmaxf(-6.0f - 20.0f * log10f(treble_effective_gain), 0.0f);
-        target_loudness_bass =
-            db_to_linear(fminf(0.22f * bass_below_reference_db, 3.0f));
-        target_loudness_treble =
-            db_to_linear(fminf(0.07f * treble_below_reference_db, 1.0f));
+
+        /* Low-volume contour: full below 0.15, smoothly returns to reference by 0.70. */
+        float low_u = clampf_local(
+            (target_airplay_control_volume - 0.15f) / 0.55f, 0.0f, 1.0f);
+        low_u = low_u * low_u * (3.0f - 2.0f * low_u);
+        const float low_comp = 1.0f - low_u;
+
+        /* High-volume protection begins at 0.80 and reaches its ceiling at 1.00. */
+        float high_u = clampf_local(
+            (target_airplay_control_volume - 0.80f) / 0.20f, 0.0f, 1.0f);
+        high_u = high_u * high_u * (3.0f - 2.0f * high_u);
+
+        /* Reserve 1 dB after estimated PEQ + master peak; cap low-volume boost. */
+        const float master_db = 20.0f * log10f(fmaxf(master_linear, 1.0e-6f));
+        const float available_bass_boost_db = clampf_local(
+            -1.0f - (master_db + low_peak_eq_gain_db), 0.0f, 2.0f);
+        const float sub_boost_db = fminf(available_bass_boost_db, 2.0f) * low_comp;
+        const float mid_boost_db = fminf(available_bass_boost_db, 1.0f) * low_comp;
+
+        /* 25..35 Hz (after the always-on 30 Hz HPF): +0..2 dB / up to -3 dB. */
+        /* 35..50 Hz: +0..1 dB / up to -1.5 dB. */
+        target_loudness_sub = db_to_linear(sub_boost_db - 3.0f * high_u);
+        target_loudness_mid = db_to_linear(mid_boost_db - 1.5f * high_u);
+
+        /* Broad 50..110 Hz and treble compensation remain conservative. */
+        target_loudness_bass = db_to_linear(
+            fminf(0.07f * bass_below_reference_db, 1.0f) * low_comp);
+        target_loudness_treble = db_to_linear(
+            fminf(0.07f * treble_below_reference_db, 1.0f) * low_comp);
     }
 
 
@@ -2717,13 +2780,21 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
 
         const size_t bypass_frames = len_bytes / 4U;
         const bool loudness_active =
+            fabsf(target_loudness_sub - 1.0f) > 0.0001f ||
+            fabsf(target_loudness_mid - 1.0f) > 0.0001f ||
             fabsf(target_loudness_bass - 1.0f) > 0.0001f ||
             fabsf(target_loudness_treble - 1.0f) > 0.0001f ||
+            fabsf(s_output_state.sub_gain - 1.0f) > 0.0001f ||
+            fabsf(s_output_state.mid_gain - 1.0f) > 0.0001f ||
             fabsf(s_output_state.bass_gain - 1.0f) > 0.0001f ||
             fabsf(s_output_state.treble_gain - 1.0f) > 0.0001f;
 
         for (size_t frame = 0; frame < bypass_frames; ++frame) {
             if (loudness_active) {
+                s_output_state.sub_gain += character_filters.loudness_gain_alpha *
+                    (target_loudness_sub - s_output_state.sub_gain);
+                s_output_state.mid_gain += character_filters.loudness_gain_alpha *
+                    (target_loudness_mid - s_output_state.mid_gain);
                 s_output_state.bass_gain += character_filters.loudness_gain_alpha *
                     (target_loudness_bass - s_output_state.bass_gain);
                 s_output_state.treble_gain += character_filters.loudness_gain_alpha *
@@ -2738,29 +2809,38 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
 
             if (loudness_active) {
                 if (!s_output_state.filter_initialized[0]) {
+                    s_output_state.sub_lp[0] = left;
+                    s_output_state.mid_lp[0] = left;
                     s_output_state.low_lp[0] = left;
                     s_output_state.high_lp[0] = left;
                     s_output_state.filter_initialized[0] = true;
                 }
                 if (!s_output_state.filter_initialized[1]) {
+                    s_output_state.sub_lp[1] = right;
+                    s_output_state.mid_lp[1] = right;
                     s_output_state.low_lp[1] = right;
                     s_output_state.high_lp[1] = right;
                     s_output_state.filter_initialized[1] = true;
                 }
 
-                s_output_state.low_lp[0] += character_filters.loudness_low_alpha *
-                    (left - s_output_state.low_lp[0]);
-                s_output_state.low_lp[1] += character_filters.loudness_low_alpha *
-                    (right - s_output_state.low_lp[1]);
-                s_output_state.high_lp[0] += character_filters.loudness_high_alpha *
-                    (left - s_output_state.high_lp[0]);
-                s_output_state.high_lp[1] += character_filters.loudness_high_alpha *
-                    (right - s_output_state.high_lp[1]);
-
-                left += s_output_state.low_lp[0] * (s_output_state.bass_gain - 1.0f) +
-                    (left - s_output_state.high_lp[0]) * (s_output_state.treble_gain - 1.0f);
-                right += s_output_state.low_lp[1] * (s_output_state.bass_gain - 1.0f) +
-                    (right - s_output_state.high_lp[1]) * (s_output_state.treble_gain - 1.0f);
+                for (unsigned ch = 0; ch < 2U; ++ch) {
+                    float *sample = (ch == 0U) ? &left : &right;
+                    s_output_state.sub_lp[ch] += character_filters.loudness_sub_alpha *
+                        (*sample - s_output_state.sub_lp[ch]);
+                    s_output_state.mid_lp[ch] += character_filters.loudness_mid_alpha *
+                        (*sample - s_output_state.mid_lp[ch]);
+                    s_output_state.low_lp[ch] += character_filters.loudness_low_alpha *
+                        (*sample - s_output_state.low_lp[ch]);
+                    s_output_state.high_lp[ch] += character_filters.loudness_high_alpha *
+                        (*sample - s_output_state.high_lp[ch]);
+                    *sample += s_output_state.sub_lp[ch] * (s_output_state.sub_gain - 1.0f) +
+                        (s_output_state.mid_lp[ch] - s_output_state.sub_lp[ch]) *
+                            (s_output_state.mid_gain - 1.0f) +
+                        (s_output_state.low_lp[ch] - s_output_state.mid_lp[ch]) *
+                            (s_output_state.bass_gain - 1.0f) +
+                        (*sample - s_output_state.high_lp[ch]) *
+                            (s_output_state.treble_gain - 1.0f);
+                }
             }
 
             /* Bypass omits PEQ/Character but retains smoothed preset master. */
@@ -2788,10 +2868,16 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
             bypass_out[frame * 2U + 1U] = float_to_pcm16_rounded(right);
         }
 
-        if (fabsf(target_loudness_bass - 1.0f) < 0.0001f &&
+        if (fabsf(target_loudness_sub - 1.0f) < 0.0001f &&
+            fabsf(target_loudness_mid - 1.0f) < 0.0001f &&
+            fabsf(target_loudness_bass - 1.0f) < 0.0001f &&
             fabsf(target_loudness_treble - 1.0f) < 0.0001f &&
+            fabsf(s_output_state.sub_gain - 1.0f) < 0.0002f &&
+            fabsf(s_output_state.mid_gain - 1.0f) < 0.0002f &&
             fabsf(s_output_state.bass_gain - 1.0f) < 0.0002f &&
             fabsf(s_output_state.treble_gain - 1.0f) < 0.0002f) {
+            s_output_state.sub_gain = 1.0f;
+            s_output_state.mid_gain = 1.0f;
             s_output_state.bass_gain = 1.0f;
             s_output_state.treble_gain = 1.0f;
             s_output_state.filter_initialized[0] = false;
@@ -2927,8 +3013,12 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
     const float inv_frames = cached_inv_frames;
 
     const bool loudness_active =
+        fabsf(target_loudness_sub - 1.0f) > 0.0001f ||
+        fabsf(target_loudness_mid - 1.0f) > 0.0001f ||
         fabsf(target_loudness_bass - 1.0f) > 0.0001f ||
         fabsf(target_loudness_treble - 1.0f) > 0.0001f ||
+        fabsf(s_output_state.sub_gain - 1.0f) > 0.0001f ||
+        fabsf(s_output_state.mid_gain - 1.0f) > 0.0001f ||
         fabsf(s_output_state.bass_gain - 1.0f) > 0.0001f ||
         fabsf(s_output_state.treble_gain - 1.0f) > 0.0001f;
 
@@ -3061,6 +3151,10 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
             current_interaction_scale += interaction_scale_step;
 
         if (loudness_active) {
+            s_output_state.sub_gain += character_filters.loudness_gain_alpha *
+                (target_loudness_sub - s_output_state.sub_gain);
+            s_output_state.mid_gain += character_filters.loudness_gain_alpha *
+                (target_loudness_mid - s_output_state.mid_gain);
             s_output_state.bass_gain += character_filters.loudness_gain_alpha *
                 (target_loudness_bass - s_output_state.bass_gain);
             s_output_state.treble_gain += character_filters.loudness_gain_alpha *
@@ -3374,29 +3468,38 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
 
         if (loudness_active) {
             if (!s_output_state.filter_initialized[0]) {
+                s_output_state.sub_lp[0] = yl;
+                s_output_state.mid_lp[0] = yl;
                 s_output_state.low_lp[0] = yl;
                 s_output_state.high_lp[0] = yl;
                 s_output_state.filter_initialized[0] = true;
             }
             if (!s_output_state.filter_initialized[1]) {
+                s_output_state.sub_lp[1] = yr;
+                s_output_state.mid_lp[1] = yr;
                 s_output_state.low_lp[1] = yr;
                 s_output_state.high_lp[1] = yr;
                 s_output_state.filter_initialized[1] = true;
             }
 
-            s_output_state.low_lp[0] += character_filters.loudness_low_alpha *
-                (yl - s_output_state.low_lp[0]);
-            s_output_state.low_lp[1] += character_filters.loudness_low_alpha *
-                (yr - s_output_state.low_lp[1]);
-            s_output_state.high_lp[0] += character_filters.loudness_high_alpha *
-                (yl - s_output_state.high_lp[0]);
-            s_output_state.high_lp[1] += character_filters.loudness_high_alpha *
-                (yr - s_output_state.high_lp[1]);
-
-            yl += s_output_state.low_lp[0] * (s_output_state.bass_gain - 1.0f) +
-                (yl - s_output_state.high_lp[0]) * (s_output_state.treble_gain - 1.0f);
-            yr += s_output_state.low_lp[1] * (s_output_state.bass_gain - 1.0f) +
-                (yr - s_output_state.high_lp[1]) * (s_output_state.treble_gain - 1.0f);
+            for (unsigned ch = 0; ch < 2U; ++ch) {
+                float *sample = (ch == 0U) ? &yl : &yr;
+                s_output_state.sub_lp[ch] += character_filters.loudness_sub_alpha *
+                    (*sample - s_output_state.sub_lp[ch]);
+                s_output_state.mid_lp[ch] += character_filters.loudness_mid_alpha *
+                    (*sample - s_output_state.mid_lp[ch]);
+                s_output_state.low_lp[ch] += character_filters.loudness_low_alpha *
+                    (*sample - s_output_state.low_lp[ch]);
+                s_output_state.high_lp[ch] += character_filters.loudness_high_alpha *
+                    (*sample - s_output_state.high_lp[ch]);
+                *sample += s_output_state.sub_lp[ch] * (s_output_state.sub_gain - 1.0f) +
+                    (s_output_state.mid_lp[ch] - s_output_state.sub_lp[ch]) *
+                        (s_output_state.mid_gain - 1.0f) +
+                    (s_output_state.low_lp[ch] - s_output_state.mid_lp[ch]) *
+                        (s_output_state.bass_gain - 1.0f) +
+                    (*sample - s_output_state.high_lp[ch]) *
+                        (s_output_state.treble_gain - 1.0f);
+            }
         } else {
             s_output_state.filter_initialized[0] = false;
             s_output_state.filter_initialized[1] = false;
@@ -3440,10 +3543,16 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
     }
 
 
-    if (fabsf(target_loudness_bass - 1.0f) < 0.0001f &&
+    if (fabsf(target_loudness_sub - 1.0f) < 0.0001f &&
+        fabsf(target_loudness_mid - 1.0f) < 0.0001f &&
+        fabsf(target_loudness_bass - 1.0f) < 0.0001f &&
         fabsf(target_loudness_treble - 1.0f) < 0.0001f &&
+        fabsf(s_output_state.sub_gain - 1.0f) < 0.0002f &&
+        fabsf(s_output_state.mid_gain - 1.0f) < 0.0002f &&
         fabsf(s_output_state.bass_gain - 1.0f) < 0.0002f &&
         fabsf(s_output_state.treble_gain - 1.0f) < 0.0002f) {
+        s_output_state.sub_gain = 1.0f;
+        s_output_state.mid_gain = 1.0f;
         s_output_state.bass_gain = 1.0f;
         s_output_state.treble_gain = 1.0f;
         s_output_state.filter_initialized[0] = false;

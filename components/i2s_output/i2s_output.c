@@ -34,7 +34,8 @@ static inline float dither_uniform(void)
 
 static inline int16_t scale_and_quantize(int16_t sample, float volume)
 {
-    if (sample == 0 || volume <= 0.0f)
+    /* Sub-2-LSB digital silence floor: do not dither inaudible noise-floor residue. */
+    if ((sample >= -1 && sample <= 1) || volume <= 0.0f)
         return 0;
 
     float scaled = (float)sample * volume;

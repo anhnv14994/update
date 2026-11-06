@@ -149,11 +149,15 @@ void dsp_engine_process_inplace(uint8_t *pcm, size_t len_bytes);
 esp_err_t dsp_engine_set_enabled(bool enabled);
 bool      dsp_engine_get_enabled(void);
 
-/* Volume monitor for optional loudness logic; actual AirPlay gain is applied after Spatial in I2S. */
-esp_err_t dsp_engine_set_output_volume(float volume);
+/* Actual linear AirPlay gain is applied once after Spatial in the final I2S stage. */
+esp_err_t dsp_engine_set_output_volume(float linear_gain);
 float     dsp_engine_get_output_volume(void);
 
-/* Low-volume compensation; state is stored with the selected preset. OFF by default. */
+/* Normalized RAOP slider position (0..1, corresponding to -30..0 dB); monitor only. */
+esp_err_t dsp_engine_set_airplay_volume(float volume);
+float     dsp_engine_get_airplay_volume(void);
+
+/* Volume-adaptive bass / loudness; state is stored with the selected preset. OFF by default. */
 esp_err_t dsp_engine_set_dynamic_loudness(bool enabled);
 bool      dsp_engine_get_dynamic_loudness(void);
 

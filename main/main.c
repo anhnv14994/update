@@ -85,9 +85,15 @@ static void raop_volume_callback(float volume, void *user_ctx)
 {
     (void)user_ctx;
 
+    if (!isfinite(volume))
+        return;
+    if (volume < 0.0f) volume = 0.0f;
+    if (volume > 1.0f) volume = 1.0f;
+
     const float linear_gain = raop_volume_to_linear_gain(volume);
-    (void)dsp_engine_set_output_volume(linear_gain);
-    /* Same linear amplitude gain is applied after Stereo Spatial at I2S. */
+    (void)dsp_engine_set_airplay_volume(volume); /* control mapping only */
+    (void)dsp_engine_set_output_volume(linear_gain); /* actual gain monitor */
+    /* Same linear amplitude gain is applied exactly once after Stereo Spatial. */
     i2s_output_set_volume(linear_gain);
 }
 
@@ -99,6 +105,7 @@ static void raop_event_handler(raop_event_t event, void *event_data, void *user_
             break;
         case RAOP_EVENT_DISCONNECTED:
             ESP_LOGI(TAG, "AirPlay: client disconnected");
+            i2s_output_transition_begin();
             break;
         case RAOP_EVENT_BUFFERING:
             ESP_LOGI(TAG, "AirPlay: buffering");
@@ -112,9 +119,11 @@ static void raop_event_handler(raop_event_t event, void *event_data, void *user_
             break;
         case RAOP_EVENT_PAUSED:
             ESP_LOGI(TAG, "AirPlay: paused");
+            i2s_output_transition_begin();
             break;
         case RAOP_EVENT_STOPPED:
             ESP_LOGI(TAG, "AirPlay: stopped");
+            i2s_output_transition_begin();
             break;
         case RAOP_EVENT_VOLUME: {
             float volume = *(float *)event_data;

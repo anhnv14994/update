@@ -708,12 +708,12 @@ input[type=range]::-moz-range-thumb{
       </div>
       <div class="peq-subtitle">A/B độc lập. Tăng strength làm hiệu ứng transient rõ hơn, không phải treble shelf liên tục. Bắt đầu thấp; HF B có spectral guard nhẹ. Mix ramp 8 ms.</div>
 
-      <div class="character-diag-title">Dynamic Loudness · lưu theo preset</div>
+      <div class="character-diag-title">Dynamic Loudness · V6.8 · lưu theo preset</div>
       <div class="feature">
-        <div class="feature-text"><div class="feature-name">Low-volume compensation</div><div class="feature-info">Bù nhẹ bass và air khi volume AirPlay thấp; OFF mặc định để giữ đáp tuyến phẳng.</div></div>
+        <div class="feature-text"><div class="feature-name">Volume-adaptive bass</div><div class="feature-info">Bù bass khi nghe nhỏ, trở về chuẩn khi nghe vừa và giảm sub-bass khi mở lớn.</div></div>
         <label class="switch"><input type="checkbox" id="dynamicLoudnessEnabled"><span class="slider-toggle"></span></label>
       </div>
-      <div class="peq-subtitle">Chỉ bù khi mức phát nhỏ hơn mốc tham chiếu khoảng −6 dB theo AirPlay volume × master preset (không phải hiệu chuẩn SPL). ON: tối đa +3 dB vùng thấp quanh 110 Hz và +1 dB trên 9 kHz; giúp nghe đầy hơn ở volume nhỏ. OFF: giữ đáp tuyến không bù. Lưu ON/OFF theo preset.</div>
+      <div class="peq-subtitle">Đọc riêng mức volume RAOP từ iPhone (0–1); không dùng linear gain để suy đoán vị trí thanh volume và không nhân gain lần hai. Nghe nhỏ: 25–35 Hz tối đa +2 dB, 35–50 Hz tối đa +1 dB, 50–110 Hz tối đa +1 dB; boost sub bị giới hạn theo headroom PEQ + master và chừa 1 dB dự trữ. Nghe lớn (từ 80%): giảm dần 25–35 Hz tối đa −3 dB và 35–50 Hz tối đa −1.5 dB. Đường cong chuyển tiếp êm 50 ms; HPF 30 Hz luôn hoạt động. OFF: không bù/cắt theo volume. Lưu ON/OFF theo preset.</div>
 
       <div class="character-diag-title">Processing time · µs per 352-sample frame</div>
       <div class="peq-subtitle">Cycle-counter elapsed time; may include scheduler preemption, so compare relative stage cost.</div>

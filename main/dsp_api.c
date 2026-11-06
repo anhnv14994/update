@@ -753,7 +753,9 @@ static cJSON *build_state_json(void)
     );
 
     cJSON_AddNumberToObject(root, "airplay_volume",
-                            dsp_engine_get_output_volume());
+                            dsp_engine_get_output_volume()); /* final linear gain */
+    cJSON_AddNumberToObject(root, "airplay_volume_control",
+                            dsp_engine_get_airplay_volume()); /* RAOP slider 0..1 */
     cJSON_AddBoolToObject(root, "dynamic_loudness_enabled",
                           dsp_engine_get_dynamic_loudness());
 

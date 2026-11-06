@@ -8,6 +8,7 @@
  */
 
 #include <stdio.h>
+#include <math.h>
 #include "platform.h"
 #include "mdns.h"
 #include "mbedtls/version.h"
@@ -520,11 +521,24 @@ static bool handle_rtsp(raop_ctx_t *ctx, int sock)
 		char *p;
 
 		if (body && (p = strcasestr(body, "volume")) != NULL) {
-			float volume;
+			float volume_db = 0.0f;
+			float volume = 0.0f;
+			char *colon = strchr(p, ':');
 
-			sscanf(p, "%*[^:]:%f", &volume);
-			volume = (volume == -144.0) ? 0 : (1 + volume / 30);
-			success = ctx->cmd_cb(RAOP_INT_VOLUME, volume);
+			if (colon && sscanf(colon + 1, "%f", &volume_db) == 1 && isfinite(volume_db)) {
+				/* RAOP mute is -144 dB; otherwise the controllable range is -30..0 dB. */
+				if (volume_db <= -143.9f) {
+					volume = 0.0f;
+				} else {
+					if (volume_db < -30.0f) volume_db = -30.0f;
+					if (volume_db > 0.0f) volume_db = 0.0f;
+					volume = 1.0f + volume_db / 30.0f;
+				}
+				success = ctx->cmd_cb(RAOP_INT_VOLUME, volume);
+			} else {
+				LOG_DEBUG("[%p]: ignored invalid RAOP volume parameter", ctx);
+				success = false;
+			}
 		} else if (body && (p = strcasestr(body, "progress")) != NULL) {
 			int start, current, stop = 0;
 
