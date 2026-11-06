@@ -97,6 +97,12 @@ void i2s_output_init(int bck_pin, int ws_pin, int dout_pin)
 {
     esp_err_t ret;
 
+    current_volume = 0.05f;
+    current_transition_gain = 1.0f;
+    atomic_store_explicit(&target_volume_q, 50000U, memory_order_relaxed);
+    atomic_store_explicit(&target_transition_q, 1000000U, memory_order_relaxed);
+    atomic_store_explicit(&transition_restart_requested, false, memory_order_relaxed);
+
     ESP_LOGI(TAG, "Initializing I2S with pins - BCK: %d, WS: %d, DOUT: %d",
              bck_pin, ws_pin, dout_pin);
 

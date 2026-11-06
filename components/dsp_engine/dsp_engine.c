@@ -280,12 +280,14 @@ typedef struct {
     float high_lp[2];
     float bass_gain;
     float treble_gain;
+    float master_gain;
     bool filter_initialized[2];
 } dsp_output_state_t;
 
 static dsp_output_state_t s_output_state = {
     .bass_gain = 1.0f,
     .treble_gain = 1.0f,
+    .master_gain = 1.0f,
 };
 
 /* Third diagnostic slot measures the optional HF refinement path. */
@@ -506,6 +508,15 @@ static inline void character_calculate_gain_coeffs(
 static inline float db_to_linear(float db)
 {
     return powf(10.0f, db / 20.0f);
+}
+
+/* Smooth master trim per sample; about an 8 ms time constant at 44.1 kHz. */
+static inline float smooth_master_gain(float current, float target)
+{
+    current += 0.002830453811f * (target - current);
+    if (fabsf(target - current) < 1.0e-6f)
+        current = target;
+    return current;
 }
 
 /* Evaluate the cached PEQ+shelf magnitude for one frequency. */
@@ -1008,6 +1019,7 @@ static void reset_stream_processing_state(void)
     memset(&s_output_state, 0, sizeof(s_output_state));
     s_output_state.bass_gain = 1.0f;
     s_output_state.treble_gain = 1.0f;
+    s_output_state.master_gain = 1.0f;
 }
 
 static void set_character_factory(void)
@@ -2751,9 +2763,11 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
                     (right - s_output_state.high_lp[1]) * (s_output_state.treble_gain - 1.0f);
             }
 
-            /* Bypass omits PEQ/Character but retains preset master for fair ON/OFF tests. */
-            left *= master_linear;
-            right *= master_linear;
+            /* Bypass omits PEQ/Character but retains smoothed preset master. */
+            s_output_state.master_gain = smooth_master_gain(
+                s_output_state.master_gain, master_linear);
+            left *= s_output_state.master_gain;
+            right *= s_output_state.master_gain;
 
             /* Stereo-linked soft-knee limiter: one gain preserves L/R balance. */
             const float knee = 0.94f;
@@ -3394,8 +3408,10 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
          * by the final I2S output stage.
          * ----------------------------------------------------
          */
-        yl *= master_linear;
-        yr *= master_linear;
+        s_output_state.master_gain = smooth_master_gain(
+            s_output_state.master_gain, master_linear);
+        yl *= s_output_state.master_gain;
+        yr *= s_output_state.master_gain;
 
 
         /*
