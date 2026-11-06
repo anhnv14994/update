@@ -1156,9 +1156,12 @@ static esp_err_t api_character_diag_handler(httpd_req_t *req)
         esp_err_t reset_err = dsp_engine_set_character_diagnostics(
             DSP_CHARACTER_STAGE_MASK_ALL, DSP_CHARACTER_FEATURE_MASK_ALL);
         end_audio_config_transition();
+        if (reset_err == ESP_OK)
+            reset_err = save_preset_options(dsp_engine_get_active_preset());
         if (reset_err != ESP_OK)
-            return send_error_json(req, 500, "cannot reset Character diagnostic masks");
-        ESP_LOGI(TAG, "Character diagnostic masks explicitly reset to ALL");
+            return send_error_json(req, 500,
+                                   "cannot reset and save Character diagnostic masks");
+        ESP_LOGI(TAG, "Character diagnostic masks reset to ALL and saved to active preset");
         return send_character_diag_state(req);
     }
 

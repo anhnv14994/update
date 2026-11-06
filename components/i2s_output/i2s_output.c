@@ -193,6 +193,11 @@ void i2s_output_write(const uint8_t *data, size_t len)
         return;
     }
 
+    if (atomic_exchange_explicit(
+            &transition_restart_requested, false, memory_order_acq_rel)) {
+        current_transition_gain = 0.0f;
+    }
+
     size_t frame_offset = 0;
     const size_t chunk_frames_max = I2S_VOLUME_BUFFER_SAMPLES / 2U;
     while (frame_offset < frame_count) {
@@ -201,12 +206,6 @@ void i2s_output_write(const uint8_t *data, size_t len)
             chunk_frames = chunk_frames_max;
 
         for (size_t frame = 0; frame < chunk_frames; ++frame) {
-            /* A stream restart fades in from zero on the output task. */
-            if (atomic_exchange_explicit(
-                    &transition_restart_requested, false, memory_order_acq_rel)) {
-                current_transition_gain = 0.0f;
-            }
-
             /* Update AirPlay and transition gains ONCE per stereo frame. */
             current_volume += I2S_VOLUME_RAMP_ALPHA *
                 (target_volume - current_volume);
