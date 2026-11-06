@@ -28,6 +28,8 @@ void stereo_spatial_free(stereo_spatial_ctx_t *ctx);
 void stereo_spatial_get_config(const stereo_spatial_ctx_t *ctx, stereo_spatial_config_t *cfg);
 void stereo_spatial_set_config(stereo_spatial_ctx_t *ctx, const stereo_spatial_config_t *cfg);
 
+/* Request audio-task-owned filter-history reset at the next block. */
+void stereo_spatial_request_stream_reset(stereo_spatial_ctx_t *ctx);
 void stereo_spatial_process_i16(stereo_spatial_ctx_t *ctx, int16_t *buffer, size_t frames);
 
 #ifdef __cplusplus

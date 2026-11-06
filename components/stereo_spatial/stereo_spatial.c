@@ -113,6 +113,7 @@ struct stereo_spatial_ctx {
     stereo_spatial_filter_set_t filter_set[SS_FILTER_SLOTS];
 
     _Atomic uint32_t active_filter_index;
+    _Atomic bool stream_reset_requested;
 
     /*
      * Runtime filter history.
@@ -537,6 +538,7 @@ stereo_spatial_init(uint32_t sample_rate)
         &ctx->active_filter_index,
         0
     );
+    atomic_init(&ctx->stream_reset_requested, false);
 
 
     ESP_LOGI(
@@ -708,6 +710,14 @@ static inline void process_biquad_block(
  * MAIN AUDIO PROCESSOR
  * ============================================================ */
 
+void stereo_spatial_request_stream_reset(stereo_spatial_ctx_t *ctx)
+{
+    if (ctx) {
+        atomic_store_explicit(
+            &ctx->stream_reset_requested, true, memory_order_release);
+    }
+}
+
 void IRAM_ATTR stereo_spatial_process_i16(
     stereo_spatial_ctx_t *ctx,
     int16_t *buffer,
@@ -716,6 +726,10 @@ void IRAM_ATTR stereo_spatial_process_i16(
     if (!ctx || !buffer || frames == 0)
         return;
 
+    if (atomic_exchange_explicit(
+            &ctx->stream_reset_requested, false, memory_order_acq_rel)) {
+        memset(&ctx->runtime, 0, sizeof(ctx->runtime));
+    }
 
     /*
      * IMPORTANT:

@@ -122,6 +122,9 @@ typedef struct {
 
 esp_err_t dsp_engine_init(void);
 
+/* Request audio-task-owned filter/history reset at the next PCM block. */
+void dsp_engine_request_stream_reset(void);
+
 /* Process stereo PCM16.
  *
  * pcm_in   : interleaved stereo PCM16

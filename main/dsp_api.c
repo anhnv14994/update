@@ -1,6 +1,7 @@
 #include "dsp_api.h"
 #include "dsp_engine.h"
 #include "stereo_spatial.h"
+#include "i2s_output.h"
 #include "esp_log.h"
 #include "cJSON.h"
 #include "nvs.h"
@@ -14,7 +15,7 @@ void stereo_spatial_get_config(const stereo_spatial_ctx_t *ctx, stereo_spatial_c
 static const char *TAG = "dsp_api";
 
 #define DSP_OPTIONS_MAGIC   0x4453504FU /* "DSPO" */
-#define DSP_OPTIONS_VERSION 3U
+#define DSP_OPTIONS_VERSION 4U
 #define DSP_OPTIONS_NS      "dsp_opts"
 
 /* Exact V1 layout kept for in-place migration of existing NVS records. */
@@ -48,6 +49,24 @@ typedef struct {
     dsp_character_t character;
 } dsp_preset_options_v2_blob_t;
 
+/* Exact V3 layout for migration. V4 keeps the same binary layout. */
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint8_t dsp_enabled;
+    uint8_t hf_a_enabled;
+    uint8_t hf_b_enabled;
+    uint8_t hf_a_strength_pct;
+    uint8_t hf_b_strength_pct;
+    uint8_t dynamic_loudness_enabled;
+    uint8_t spatial_mode;
+    uint8_t enable_width_eq;
+    uint8_t enable_decorrelator;
+    uint8_t character_stage_mask;
+    uint8_t character_feature_mask;
+    dsp_character_t character;
+} dsp_preset_options_v3_blob_t;
+
 typedef struct {
     uint32_t magic;
     uint16_t version;
@@ -70,6 +89,16 @@ static dsp_character_t s_legacy_character;
 static bool s_legacy_character_valid;
 
 static esp_err_t save_preset_options(dsp_preset_id_t id);
+
+static void begin_audio_config_transition(void)
+{
+    i2s_output_transition_begin();
+}
+
+static void end_audio_config_transition(void)
+{
+    i2s_output_transition_end();
+}
 
 static void apply_legacy_character(void)
 {
@@ -202,8 +231,9 @@ static esp_err_t apply_v2_preset_options(
     if (err != ESP_OK)
         return err;
 
+    /* Firmware upgrade clears any diagnostic bypass left by old A/B tests. */
     err = dsp_engine_set_character_diagnostics(
-        old->character_stage_mask, old->character_feature_mask);
+        DSP_CHARACTER_STAGE_MASK_ALL, DSP_CHARACTER_FEATURE_MASK_ALL);
     if (err != ESP_OK)
         return err;
 
@@ -220,6 +250,81 @@ static esp_err_t apply_v2_preset_options(
     err = save_preset_options(id);
     if (err != ESP_OK)
         ESP_LOGW(TAG, "Preset %d V2 migration save failed: %s",
+                 (int)id, esp_err_to_name(err));
+    return ESP_OK;
+}
+
+static bool preset_options_v3_valid(const dsp_preset_options_v3_blob_t *blob)
+{
+    return blob &&
+        blob->magic == DSP_OPTIONS_MAGIC &&
+        blob->version == 3U &&
+        blob->dsp_enabled <= 1U &&
+        blob->hf_a_enabled <= 1U &&
+        blob->hf_b_enabled <= 1U &&
+        blob->hf_a_strength_pct <= 100U &&
+        blob->hf_b_strength_pct <= 100U &&
+        blob->dynamic_loudness_enabled <= 1U &&
+        blob->spatial_mode <= STEREO_SPATIAL_MODE_WIDE &&
+        blob->enable_width_eq <= 1U &&
+        blob->enable_decorrelator <= 1U;
+}
+
+static esp_err_t apply_v3_preset_options(
+    dsp_preset_id_t id,
+    const dsp_preset_options_v3_blob_t *old)
+{
+    if (!preset_options_v3_valid(old)) {
+        ESP_LOGW(TAG, "Preset %d V3 options invalid; using defaults", (int)id);
+        apply_default_preset_options();
+        return ESP_OK;
+    }
+
+    esp_err_t err = dsp_engine_set_character(&old->character);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Preset %d V3 Character invalid; using defaults", (int)id);
+        apply_default_preset_options();
+        return ESP_OK;
+    }
+
+    err = dsp_engine_set_character_hf(
+        old->hf_a_enabled != 0U, old->hf_b_enabled != 0U,
+        old->hf_a_strength_pct, old->hf_b_strength_pct);
+    if (err != ESP_OK)
+        return err;
+
+    err = dsp_engine_set_dynamic_loudness(
+        old->dynamic_loudness_enabled != 0U);
+    if (err != ESP_OK)
+        return err;
+
+    /* Reset diagnostic A/B masks on V3 -> V4 firmware migration. */
+    err = dsp_engine_set_character_diagnostics(
+        DSP_CHARACTER_STAGE_MASK_ALL, DSP_CHARACTER_FEATURE_MASK_ALL);
+    if (err != ESP_OK)
+        return err;
+
+    if (g_stereo_ctx) {
+        const stereo_spatial_config_t cfg = {
+            .mode = (stereo_spatial_mode_t)old->spatial_mode,
+            .enable_width_eq = old->enable_width_eq != 0U,
+            .enable_decorrelator = old->enable_decorrelator != 0U
+        };
+        stereo_spatial_set_config(g_stereo_ctx, &cfg);
+    }
+
+    if (dsp_engine_get_enabled() != (old->dsp_enabled != 0U)) {
+        err = dsp_engine_set_enabled(old->dsp_enabled != 0U);
+        if (err != ESP_OK)
+            return err;
+    }
+
+    ESP_LOGW(TAG,
+             "Preset %d V3 -> V4 migration: diagnostic A/B masks reset to ALL",
+             (int)id);
+    err = save_preset_options(id);
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "Preset %d V4 migration save failed: %s",
                  (int)id, esp_err_to_name(err));
     return ESP_OK;
 }
@@ -278,25 +383,37 @@ static esp_err_t apply_preset_options(dsp_preset_id_t id)
         return apply_v2_preset_options(id, &old);
     }
 
-    if (len != sizeof(dsp_preset_options_blob_t)) {
+    if (len != sizeof(dsp_preset_options_v3_blob_t)) {
         nvs_close(nvs);
         ESP_LOGW(TAG, "Preset %d options size unsupported; using defaults", (int)id);
         apply_default_preset_options();
         return ESP_OK;
     }
 
-    dsp_preset_options_blob_t blob;
-    size_t read_len = sizeof(blob);
-    err = nvs_get_blob(nvs, key, &blob, &read_len);
+    /* V3 and V4 deliberately share a frozen layout; inspect version after read. */
+    dsp_preset_options_v3_blob_t raw;
+    size_t read_len = sizeof(raw);
+    err = nvs_get_blob(nvs, key, &raw, &read_len);
     nvs_close(nvs);
-    if (err != ESP_OK || read_len != sizeof(blob)) {
+    if (err != ESP_OK || read_len != sizeof(raw)) {
         apply_default_preset_options();
         return ESP_OK;
     }
 
-    if (blob.magic != DSP_OPTIONS_MAGIC ||
-        blob.version != DSP_OPTIONS_VERSION ||
-        blob.dsp_enabled > 1U ||
+    if (raw.magic == DSP_OPTIONS_MAGIC && raw.version == 3U)
+        return apply_v3_preset_options(id, &raw);
+
+    if (raw.magic != DSP_OPTIONS_MAGIC || raw.version != DSP_OPTIONS_VERSION) {
+        ESP_LOGW(TAG, "Preset %d options version unsupported; preserved, defaults applied",
+                 (int)id);
+        apply_default_preset_options();
+        return ESP_OK;
+    }
+
+    dsp_preset_options_blob_t blob;
+    memcpy(&blob, &raw, sizeof(blob));
+
+    if (blob.dsp_enabled > 1U ||
         blob.hf_a_enabled > 1U || blob.hf_b_enabled > 1U ||
         blob.hf_a_strength_pct > 100U || blob.hf_b_strength_pct > 100U ||
         blob.dynamic_loudness_enabled > 1U ||
@@ -307,6 +424,13 @@ static esp_err_t apply_preset_options(dsp_preset_id_t id)
         ESP_LOGW(TAG, "Preset %d options invalid; using defaults", (int)id);
         apply_default_preset_options();
         return ESP_OK;
+    }
+
+    if (blob.character_stage_mask != DSP_CHARACTER_STAGE_MASK_ALL ||
+        blob.character_feature_mask != DSP_CHARACTER_FEATURE_MASK_ALL) {
+        ESP_LOGW(TAG,
+                 "Preset %d Character A/B diagnostic bypass active: stage=%u feature=%u",
+                 (int)id, blob.character_stage_mask, blob.character_feature_mask);
     }
 
     err = dsp_engine_set_character(&blob.character);
@@ -957,12 +1081,13 @@ static esp_err_t api_enabled_handler(
     }
 
 
-    dsp_engine_set_enabled(
-        cJSON_IsTrue(en)
-    );
-
+    begin_audio_config_transition();
+    esp_err_t set_err = dsp_engine_set_enabled(cJSON_IsTrue(en));
+    end_audio_config_transition();
 
     cJSON_Delete(body);
+    if (set_err != ESP_OK)
+        return send_error_json(req, 500, "cannot update DSP enabled state");
 
     return send_state(req);
 }
@@ -1024,17 +1149,33 @@ static esp_err_t api_character_diag_handler(httpd_req_t *req)
     if (!body)
         return send_error_json(req, 400, "invalid or empty json");
 
+    cJSON *reset = cJSON_GetObjectItem(body, "reset");
+    if (cJSON_IsTrue(reset)) {
+        cJSON_Delete(body);
+        begin_audio_config_transition();
+        esp_err_t reset_err = dsp_engine_set_character_diagnostics(
+            DSP_CHARACTER_STAGE_MASK_ALL, DSP_CHARACTER_FEATURE_MASK_ALL);
+        end_audio_config_transition();
+        if (reset_err != ESP_OK)
+            return send_error_json(req, 500, "cannot reset Character diagnostic masks");
+        ESP_LOGI(TAG, "Character diagnostic masks explicitly reset to ALL");
+        return send_character_diag_state(req);
+    }
+
     cJSON *stage = cJSON_GetObjectItem(body, "stage_mask");
     cJSON *feature = cJSON_GetObjectItem(body, "feature_mask");
     if (!cJSON_IsNumber(stage) || !cJSON_IsNumber(feature) ||
         stage->valueint < 0 || stage->valueint > (int)DSP_CHARACTER_STAGE_MASK_ALL ||
         feature->valueint < 0 || feature->valueint > (int)DSP_CHARACTER_FEATURE_MASK_ALL) {
         cJSON_Delete(body);
-        return send_error_json(req, 400, "stage_mask 0..3 and feature_mask 0..7 required");
+        return send_error_json(req, 400,
+                               "stage_mask 0..3 and feature_mask 0..7 required, or reset=true");
     }
 
+    begin_audio_config_transition();
     esp_err_t err = dsp_engine_set_character_diagnostics(
         (uint8_t)stage->valueint, (uint8_t)feature->valueint);
+    end_audio_config_transition();
     cJSON_Delete(body);
 
     if (err != ESP_OK)
@@ -1063,7 +1204,10 @@ static esp_err_t api_loudness_handler(httpd_req_t *req)
 
     const bool value = cJSON_IsTrue(enabled);
     cJSON_Delete(body);
-    if (dsp_engine_set_dynamic_loudness(value) != ESP_OK)
+    begin_audio_config_transition();
+    esp_err_t err = dsp_engine_set_dynamic_loudness(value);
+    end_audio_config_transition();
+    if (err != ESP_OK)
         return send_error_json(req, 500, "cannot update Dynamic Loudness");
 
     return send_state(req);
@@ -1086,6 +1230,7 @@ static esp_err_t api_character_handler(httpd_req_t *req)
         cJSON_Delete(body);
         return send_error_json(req, 500, "cannot read character config");
     }
+    const dsp_character_t previous = current;
 
     cJSON *mode = cJSON_GetObjectItem(body, "mode");
     if (mode && cJSON_IsNumber(mode)) {
@@ -1161,22 +1306,37 @@ static esp_err_t api_character_handler(httpd_req_t *req)
 
     cJSON_Delete(body);
 
-    if (dsp_engine_set_character(&current) != ESP_OK)
-        return send_error_json(req, 400, "invalid character parameters");
+    bool old_a = false, old_b = false;
+    uint8_t old_a_strength = 0, old_b_strength = 0;
+    (void)dsp_engine_get_character_hf(
+        &old_a, &old_b, &old_a_strength, &old_b_strength);
 
-    if (update_hf_a || update_hf_b || update_hf_a_strength || update_hf_b_strength) {
-        bool old_a = false, old_b = false;
-        uint8_t old_a_strength = 0, old_b_strength = 0;
-        (void)dsp_engine_get_character_hf(
-            &old_a, &old_b, &old_a_strength, &old_b_strength);
-        if (dsp_engine_set_character_hf(
-                update_hf_a ? hf_a_value : old_a,
-                update_hf_b ? hf_b_value : old_b,
-                update_hf_a_strength ? hf_a_strength_value : old_a_strength,
-                update_hf_b_strength ? hf_b_strength_value : old_b_strength) != ESP_OK) {
-            return send_error_json(req, 500, "cannot update HF refinement controls");
-        }
+    const bool hf_switch_changed =
+        (update_hf_a && hf_a_value != old_a) ||
+        (update_hf_b && hf_b_value != old_b);
+    const bool needs_transition =
+        current.enabled != previous.enabled ||
+        current.mode != previous.mode ||
+        hf_switch_changed;
+
+    if (needs_transition)
+        begin_audio_config_transition();
+
+    esp_err_t err = dsp_engine_set_character(&current);
+    if (err == ESP_OK &&
+        (update_hf_a || update_hf_b || update_hf_a_strength || update_hf_b_strength)) {
+        err = dsp_engine_set_character_hf(
+            update_hf_a ? hf_a_value : old_a,
+            update_hf_b ? hf_b_value : old_b,
+            update_hf_a_strength ? hf_a_strength_value : old_a_strength,
+            update_hf_b_strength ? hf_b_strength_value : old_b_strength);
     }
+
+    if (needs_transition)
+        end_audio_config_transition();
+
+    if (err != ESP_OK)
+        return send_error_json(req, 400, "invalid Character/HF parameters");
 
     return send_state(req);
 }
@@ -1287,10 +1447,12 @@ static esp_err_t api_spatial_handler(
         }
 
 
+        begin_audio_config_transition();
         stereo_spatial_set_config(
             g_stereo_ctx,
             &cfg
         );
+        end_audio_config_transition();
     }
 
 
@@ -1348,9 +1510,11 @@ static esp_err_t api_select_handler(
 
 
     const dsp_preset_id_t selected = (dsp_preset_id_t)preset->valueint;
+    begin_audio_config_transition();
     esp_err_t err = dsp_engine_select_preset(selected);
     if (err == ESP_OK)
         err = apply_preset_options(selected);
+    end_audio_config_transition();
 
     cJSON_Delete(body);
     if (err != ESP_OK)
@@ -1511,14 +1675,15 @@ static esp_err_t api_shelf_handler(
         get_target_preset(body);
 
 
-    dsp_engine_set_shelf(
+    esp_err_t err = dsp_engine_set_shelf(
         target,
         (float)freq->valuedouble,
         (float)gain->valuedouble
     );
 
-
     cJSON_Delete(body);
+    if (err != ESP_OK)
+        return send_error_json(req, 400, "invalid shelf parameters");
 
     return send_state(req);
 }
@@ -1573,13 +1738,14 @@ static esp_err_t api_master_handler(
         get_target_preset(body);
 
 
-    dsp_engine_set_master(
+    esp_err_t err = dsp_engine_set_master(
         target,
         (float)gain->valuedouble
     );
 
-
     cJSON_Delete(body);
+    if (err != ESP_OK)
+        return send_error_json(req, 400, "invalid master gain");
 
     return send_state(req);
 }
@@ -1664,18 +1830,23 @@ static esp_err_t api_reset_handler(
         cJSON_Delete(body);
 
 
+    const bool active_target = (target == dsp_engine_get_active_preset());
+    if (active_target)
+        begin_audio_config_transition();
+
     esp_err_t err =
         dsp_engine_reset_preset(
             target
         );
 
+    if (err == ESP_OK)
+        err = reset_preset_options(target);
+
+    if (active_target)
+        end_audio_config_transition();
 
     if (err != ESP_OK)
-        return send_error_json(req, 500, "reset failed");
-
-    err = reset_preset_options(target);
-    if (err != ESP_OK)
-        return send_error_json(req, 500, "preset options reset failed");
+        return send_error_json(req, 500, "preset reset failed");
 
     return send_state(req);
 }

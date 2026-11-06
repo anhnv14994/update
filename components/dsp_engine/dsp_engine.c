@@ -141,6 +141,8 @@ static uint8_t        s_active_num_stages = 0;
 static biquad_coef_t  s_active_coefs[DSP_NUM_STAGES];
 
 static float          s_active_master_linear = 1.0f;
+static float          s_active_low_peak_eq_gain_db = 0.0f;
+static float          s_active_high_peak_eq_gain_db = 0.0f;
 
 #if CONFIG_DSP_PEQ_USE_ESP_DSP_AES3
 /*
@@ -297,6 +299,7 @@ static _Atomic uint32_t s_character_diag_stage_max_us[DSP_CHARACTER_DIAG_SLOTS] 
 
 /* Audio-task-owned state used to clear stale histories after a test bypass. */
 static uint8_t s_character_active_stage_mask = 0;
+static _Atomic bool s_stream_reset_requested = false;
 
 
 /* ============================================================
@@ -452,6 +455,10 @@ static inline int16_t float_to_pcm16_rounded(float sample)
     if (!isfinite(sample))
         return 0;
 
+    /* Do not dither values that are far below one PCM16 quantization step. */
+    if (fabsf(sample) < 1.0e-7f)
+        return 0;
+
     /* One TPDF-LSB peak dither before this PCM16 quantization boundary. */
     const float scaled = clampf_local(
         sample * 32768.0f + dsp_tpdf_dither_lsb(),
@@ -499,6 +506,64 @@ static inline void character_calculate_gain_coeffs(
 static inline float db_to_linear(float db)
 {
     return powf(10.0f, db / 20.0f);
+}
+
+/* Evaluate the cached PEQ+shelf magnitude for one frequency. */
+static float biquad_response_db(const biquad_coef_t *c, float freq_hz)
+{
+    const float w = 2.0f * (float)M_PI * freq_hz / DSP_SAMPLE_RATE_HZ;
+    const float c1 = cosf(w);
+    const float s1 = sinf(w);
+    const float c2 = cosf(2.0f * w);
+    const float s2 = sinf(2.0f * w);
+
+    const float nr = c->b0 + c->b1 * c1 + c->b2 * c2;
+    const float ni = -c->b1 * s1 - c->b2 * s2;
+    const float dr = 1.0f + c->a1 * c1 + c->a2 * c2;
+    const float di = -c->a1 * s1 - c->a2 * s2;
+    const float den = fmaxf(dr * dr + di * di, 1.0e-20f);
+    const float mag2 = (nr * nr + ni * ni) / den;
+
+    return 10.0f * log10f(fmaxf(mag2, 1.0e-12f));
+}
+
+/*
+ * Conservative digital headroom estimate for Dynamic Loudness.
+ * Evaluate the PEQ+shelf chain over bass and treble bands when a preset
+ * is rebuilt, not in the real-time sample loop. Only positive boost is
+ * returned; cuts do not create extra loudness compensation.
+ */
+static void estimate_eq_headroom_db(
+    const biquad_coef_t *coefs,
+    uint8_t num_stages,
+    float *low_peak_db,
+    float *high_peak_db)
+{
+    float low_peak = 0.0f;
+    float high_peak = 0.0f;
+
+    for (unsigned i = 0; i < 64U; ++i) {
+        const float t = (float)i / 63.0f;
+        const float low_hz = 20.0f * powf(250.0f / 20.0f, t);
+        const float high_hz = 6000.0f * powf(20000.0f / 6000.0f, t);
+        float low_db = 0.0f;
+        float high_db = 0.0f;
+
+        for (uint8_t stage = 0; stage < num_stages; ++stage) {
+            low_db += biquad_response_db(&coefs[stage], low_hz);
+            high_db += biquad_response_db(&coefs[stage], high_hz);
+        }
+
+        if (low_db > low_peak)
+            low_peak = low_db;
+        if (high_db > high_peak)
+            high_peak = high_db;
+    }
+
+    if (low_peak_db)
+        *low_peak_db = low_peak;
+    if (high_peak_db)
+        *high_peak_db = high_peak;
 }
 
 
@@ -931,6 +996,20 @@ static void reset_character_states(void)
     s_character_active_stage_mask = 0;
 }
 
+static void reset_stream_processing_state(void)
+{
+#if CONFIG_DSP_PEQ_USE_ESP_DSP_AES3 || CONFIG_DSP_PEQ_USE_ESP_DSP
+    memset(s_peq_state, 0, sizeof(s_peq_state));
+#else
+    memset(s_state, 0, sizeof(s_state));
+#endif
+    memset(s_subsonic_hpf_state, 0, sizeof(s_subsonic_hpf_state));
+    reset_character_states();
+    memset(&s_output_state, 0, sizeof(s_output_state));
+    s_output_state.bass_gain = 1.0f;
+    s_output_state.treble_gain = 1.0f;
+}
+
 static void set_character_factory(void)
 {
     memset(&s_character, 0, sizeof(s_character));
@@ -1174,12 +1253,38 @@ static esp_err_t load_character_from_nvs(nvs_handle_t nvs)
  * Apply preset
  * ============================================================ */
 
+static bool dsp_preset_data_valid(const dsp_preset_t *preset)
+{
+    if (!preset || !memchr(preset->name, '\0', sizeof(preset->name)) ||
+        preset->num_bands > DSP_MAX_BANDS)
+        return false;
+
+    if (!isfinite(preset->shelf_freq) ||
+        !isfinite(preset->shelf_gain_db) ||
+        !isfinite(preset->master_gain_db) ||
+        preset->shelf_freq < 1000.0f || preset->shelf_freq > 20000.0f ||
+        preset->shelf_gain_db < -12.0f || preset->shelf_gain_db > 12.0f ||
+        preset->master_gain_db < -24.0f || preset->master_gain_db > 6.0f)
+        return false;
+
+    for (uint8_t i = 0; i < preset->num_bands; ++i) {
+        const dsp_band_t *band = &preset->bands[i];
+        if (!isfinite(band->freq) || !isfinite(band->gain_db) ||
+            !isfinite(band->q) ||
+            band->freq < 20.0f || band->freq > 20000.0f ||
+            band->gain_db < -12.0f || band->gain_db > 12.0f ||
+            band->q < 0.1f || band->q > 10.0f)
+            return false;
+    }
+
+    return true;
+}
+
 static esp_err_t apply_preset_as_active(
     const dsp_preset_t *preset)
 {
-    if (!preset)
+    if (!dsp_preset_data_valid(preset))
         return ESP_ERR_INVALID_ARG;
-
 
     biquad_coef_t new_coefs[DSP_NUM_STAGES];
 
@@ -1223,6 +1328,11 @@ static esp_err_t apply_preset_as_active(
     const uint8_t num_stages =
         num_bands + 1;
 
+    float low_peak_eq_gain_db = 0.0f;
+    float high_peak_eq_gain_db = 0.0f;
+    estimate_eq_headroom_db(
+        new_coefs, num_stages,
+        &low_peak_eq_gain_db, &high_peak_eq_gain_db);
 
     const float master_linear =
         db_to_linear(
@@ -1252,6 +1362,8 @@ static esp_err_t apply_preset_as_active(
 
     s_active_master_linear =
         master_linear;
+    s_active_low_peak_eq_gain_db = low_peak_eq_gain_db;
+    s_active_high_peak_eq_gain_db = high_peak_eq_gain_db;
 
     if (s_lock)
         xSemaphoreGive(
@@ -1320,48 +1432,38 @@ static esp_err_t load_preset_from_nvs(
             &len
         );
 
-    /*
-     * Không có preset / blob cũ / version cũ:
-     * dùng factory preset mới.
-     */
-    if (err != ESP_OK ||
-        len != sizeof(blob) ||
-        blob.magic != DSP_PRESET_MAGIC ||
-        blob.version != DSP_PRESET_VERSION) {
+    /* A genuinely missing record gets a factory seed. */
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        s_presets[id] = s_factory_presets[id];
+        blob.magic = DSP_PRESET_MAGIC;
+        blob.version = DSP_PRESET_VERSION;
+        blob.preset = s_factory_presets[id];
+        return nvs_set_blob(nvs, key, &blob, sizeof(blob));
+    }
 
-        s_presets[id] =
-            s_factory_presets[id];
-
-        /*
-         * Ghi đè ngay factory preset mới vào NVS.
-         */
-        blob.magic =
-            DSP_PRESET_MAGIC;
-
-        blob.version =
-            DSP_PRESET_VERSION;
-
-        blob.preset =
-            s_factory_presets[id];
-
-        err =
-            nvs_set_blob(
-                nvs,
-                key,
-                &blob,
-                sizeof(blob)
-            );
-
-        return err;
+    if (err != ESP_OK) {
+        s_presets[id] = s_factory_presets[id];
+        ESP_LOGW(TAG, "Preset %d NVS read failed (%s); using factory in RAM",
+                 (int)id, esp_err_to_name(err));
+        return ESP_OK;
     }
 
     /*
-     * Version hiện tại:
-     * giữ nguyên preset user đã Save.
+     * Preserve unknown/incompatible blobs instead of overwriting a user's
+     * saved data. Factory values are used in RAM until an explicit Save.
      */
-    s_presets[id] =
-        blob.preset;
+    if (len != sizeof(blob) ||
+        blob.magic != DSP_PRESET_MAGIC ||
+        blob.version != DSP_PRESET_VERSION ||
+        !dsp_preset_data_valid(&blob.preset)) {
+        s_presets[id] = s_factory_presets[id];
+        ESP_LOGW(TAG,
+                 "Preset %d NVS blob incompatible/invalid; preserved, factory used in RAM",
+                 (int)id);
+        return ESP_OK;
+    }
 
+    s_presets[id] = blob.preset;
     return ESP_OK;
 }
 
@@ -1392,6 +1494,8 @@ esp_err_t dsp_engine_init(void)
     if (!s_lock)
         return ESP_ERR_NO_MEM;
 
+
+    atomic_store_explicit(&s_stream_reset_requested, false, memory_order_relaxed);
 
     /*
      * Factory defaults.
@@ -1847,7 +1951,8 @@ esp_err_t dsp_engine_set_band(
     float q)
 {
     if (id < 0 ||
-        id >= DSP_NUM_PRESETS) {
+        id >= DSP_NUM_PRESETS ||
+        !isfinite(freq) || !isfinite(gain_db) || !isfinite(q)) {
 
         return ESP_ERR_INVALID_ARG;
     }
@@ -1933,7 +2038,8 @@ esp_err_t dsp_engine_set_shelf(
     float gain_db)
 {
     if (id < 0 ||
-        id >= DSP_NUM_PRESETS) {
+        id >= DSP_NUM_PRESETS ||
+        !isfinite(freq) || !isfinite(gain_db)) {
 
         return ESP_ERR_INVALID_ARG;
     }
@@ -1991,7 +2097,8 @@ esp_err_t dsp_engine_set_master(
     float gain_db)
 {
     if (id < 0 ||
-        id >= DSP_NUM_PRESETS) {
+        id >= DSP_NUM_PRESETS ||
+        !isfinite(gain_db)) {
 
         return ESP_ERR_INVALID_ARG;
     }
@@ -2396,6 +2503,12 @@ esp_err_t dsp_engine_set_character_diagnostics(uint8_t stage_mask,
     return ESP_OK;
 }
 
+void dsp_engine_request_stream_reset(void)
+{
+    atomic_store_explicit(
+        &s_stream_reset_requested, true, memory_order_release);
+}
+
 esp_err_t dsp_engine_get_character_diagnostic_masks(uint8_t *stage_mask,
                                                      uint8_t *feature_mask)
 {
@@ -2460,12 +2573,18 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
         return pcm_in;
     }
 
+    if (atomic_exchange_explicit(
+            &s_stream_reset_requested, false, memory_order_acq_rel)) {
+        reset_stream_processing_state();
+    }
 
     /* Local DSP configuration copied from the cached snapshot. */
     bool enabled;
     bool character_enabled;
     uint8_t num_stages;
     float master_linear;
+    float low_peak_eq_gain_db;
+    float high_peak_eq_gain_db;
 
     biquad_coef_t coefs[DSP_NUM_STAGES];
     dsp_character_t character;
@@ -2484,6 +2603,8 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
         bool character_enabled;
         uint8_t num_stages;
         float master_linear;
+        float low_peak_eq_gain_db;
+        float high_peak_eq_gain_db;
         biquad_coef_t coefs[DSP_NUM_STAGES];
         dsp_character_t character;
         character_filter_coef_t character_filters;
@@ -2496,6 +2617,8 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
         cached.enabled = s_enabled;
         cached.num_stages = s_active_num_stages;
         cached.master_linear = s_active_master_linear;
+        cached.low_peak_eq_gain_db = s_active_low_peak_eq_gain_db;
+        cached.high_peak_eq_gain_db = s_active_high_peak_eq_gain_db;
         memcpy(cached.coefs, s_active_coefs, sizeof(cached.coefs));
 
         cached.character = s_character;
@@ -2512,6 +2635,8 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
     enabled = cached.enabled;
     num_stages = cached.num_stages;
     master_linear = cached.master_linear;
+    low_peak_eq_gain_db = cached.low_peak_eq_gain_db;
+    high_peak_eq_gain_db = cached.high_peak_eq_gain_db;
     memcpy(coefs, cached.coefs, sizeof(coefs));
     character = cached.character;
     character_enabled = cached.character_enabled;
@@ -2539,15 +2664,20 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
     float target_loudness_bass = 1.0f;
     float target_loudness_treble = 1.0f;
     if (dynamic_loudness_requested && target_output_volume > 0.0001f) {
-        const float effective_gain = fmaxf(
-            target_output_volume * master_linear, 0.001f);
-        const float effective_gain_db = 20.0f * log10f(effective_gain);
-        const float below_reference_db =
-            fmaxf(-6.0f - effective_gain_db, 0.0f);
+        const float bass_effective_gain = fmaxf(
+            target_output_volume * master_linear *
+            db_to_linear(low_peak_eq_gain_db), 0.001f);
+        const float treble_effective_gain = fmaxf(
+            target_output_volume * master_linear *
+            db_to_linear(high_peak_eq_gain_db), 0.001f);
+        const float bass_below_reference_db =
+            fmaxf(-6.0f - 20.0f * log10f(bass_effective_gain), 0.0f);
+        const float treble_below_reference_db =
+            fmaxf(-6.0f - 20.0f * log10f(treble_effective_gain), 0.0f);
         target_loudness_bass =
-            db_to_linear(fminf(0.22f * below_reference_db, 3.0f));
+            db_to_linear(fminf(0.22f * bass_below_reference_db, 3.0f));
         target_loudness_treble =
-            db_to_linear(fminf(0.07f * below_reference_db, 1.0f));
+            db_to_linear(fminf(0.07f * treble_below_reference_db, 1.0f));
     }
 
 

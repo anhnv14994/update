@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
@@ -68,13 +69,26 @@ static void audio_output_callback(const uint8_t *data, size_t len, void *user_da
     i2s_output_write(data, out_len);
 }
 
+static float raop_volume_to_linear_gain(float volume)
+{
+    if (!isfinite(volume) || volume <= 0.0f)
+        return 0.0f;
+    if (volume >= 1.0f)
+        return 1.0f;
+
+    /* RAOP callback is normalized over -30..0 dB, not linear amplitude. */
+    const float volume_db = 30.0f * (volume - 1.0f);
+    return powf(10.0f, volume_db / 20.0f);
+}
+
 static void raop_volume_callback(float volume, void *user_ctx)
 {
     (void)user_ctx;
-    /* DSP uses this value only for optional loudness tracking. */
-    (void)dsp_engine_set_output_volume(volume);
-    /* Actual AirPlay gain is applied after Stereo Spatial, at final I2S output. */
-    i2s_output_set_volume(volume);
+
+    const float linear_gain = raop_volume_to_linear_gain(volume);
+    (void)dsp_engine_set_output_volume(linear_gain);
+    /* Same linear amplitude gain is applied after Stereo Spatial at I2S. */
+    i2s_output_set_volume(linear_gain);
 }
 
 static void raop_event_handler(raop_event_t event, void *event_data, void *user_ctx)
@@ -91,6 +105,10 @@ static void raop_event_handler(raop_event_t event, void *event_data, void *user_
             break;
         case RAOP_EVENT_PLAYING:
             ESP_LOGI(TAG, "AirPlay: playing");
+            dsp_engine_request_stream_reset();
+            if (g_stereo_ctx)
+                stereo_spatial_request_stream_reset(g_stereo_ctx);
+            i2s_output_request_fade_in();
             break;
         case RAOP_EVENT_PAUSED:
             ESP_LOGI(TAG, "AirPlay: paused");

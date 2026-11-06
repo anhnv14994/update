@@ -8,14 +8,19 @@
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "i2s_output";
 
 #define I2S_VOLUME_BUFFER_SAMPLES 1024U /* 512 stereo frames / 2048 bytes */
-#define I2S_VOLUME_RAMP_ALPHA    0.002830453811f /* 8 ms at 44.1 kHz, once per frame */
+#define I2S_VOLUME_RAMP_ALPHA       0.002830453811f /* 8 ms at 44.1 kHz, once per frame */
+#define I2S_TRANSITION_RAMP_SAMPLES 441U /* 10 ms at 44.1 kHz */
 
 static _Atomic uint32_t target_volume_q = 50000U; /* RAOP startup default: 0.05 */
 static float current_volume = 0.05f;             /* Owned by the I2S output task. */
+static _Atomic uint32_t target_transition_q = 1000000U;
+static _Atomic bool transition_restart_requested = false;
+static float current_transition_gain = 1.0f;      /* Owned by the I2S output task. */
 static int16_t volume_buffer[I2S_VOLUME_BUFFER_SAMPLES];
 static uint32_t dither_rng = 0x6D2B79F5U;
 
@@ -60,6 +65,32 @@ void i2s_output_set_volume(float volume)
 
     const uint32_t q = (uint32_t)(volume * 1000000.0f + 0.5f);
     atomic_store_explicit(&target_volume_q, q, memory_order_release);
+}
+
+/*
+ * Fade the final output to silence before changing active DSP settings.
+ * The output task owns current_transition_gain; control tasks only publish
+ * targets. If no stream is playing, no PCM is processed and the fade is a no-op.
+ */
+void i2s_output_transition_begin(void)
+{
+    if (!tx_handle)
+        return;
+
+    atomic_store_explicit(&target_transition_q, 0U, memory_order_release);
+    vTaskDelay(pdMS_TO_TICKS(20));
+}
+
+void i2s_output_transition_end(void)
+{
+    atomic_store_explicit(&target_transition_q, 1000000U, memory_order_release);
+}
+
+/* Request a 10 ms fade-in on the first PCM block of a new AirPlay stream. */
+void i2s_output_request_fade_in(void)
+{
+    atomic_store_explicit(&target_transition_q, 1000000U, memory_order_release);
+    atomic_store_explicit(&transition_restart_requested, true, memory_order_release);
 }
 
 void i2s_output_init(int bck_pin, int ws_pin, int dout_pin)
@@ -136,9 +167,13 @@ void i2s_output_write(const uint8_t *data, size_t len)
     const size_t frame_count = len / (2U * sizeof(int16_t));
     const float target_volume = (float)atomic_load_explicit(
         &target_volume_q, memory_order_acquire) * 0.000001f;
+    const float target_transition = (float)atomic_load_explicit(
+        &target_transition_q, memory_order_acquire) * 0.000001f;
 
     /* Exact unity bypass: no copy, no dither, no extra arithmetic. */
-    if (target_volume >= 0.999999f && current_volume >= 0.999999f) {
+    if (target_volume >= 0.999999f && current_volume >= 0.999999f &&
+        target_transition >= 0.999999f && current_transition_gain >= 0.999999f &&
+        !atomic_load_explicit(&transition_restart_requested, memory_order_acquire)) {
         current_volume = 1.0f;
         size_t bytes_written = 0;
         const esp_err_t ret = i2s_channel_write(
@@ -160,17 +195,34 @@ void i2s_output_write(const uint8_t *data, size_t len)
             chunk_frames = chunk_frames_max;
 
         for (size_t frame = 0; frame < chunk_frames; ++frame) {
-            /* Update gain ONCE per stereo frame: L/R always share one gain. */
+            /* A stream restart fades in from zero on the output task. */
+            if (atomic_exchange_explicit(
+                    &transition_restart_requested, false, memory_order_acq_rel)) {
+                current_transition_gain = 0.0f;
+            }
+
+            /* Update AirPlay and transition gains ONCE per stereo frame. */
             current_volume += I2S_VOLUME_RAMP_ALPHA *
                 (target_volume - current_volume);
             if (target_volume <= 0.0f && current_volume < 0.0001f)
                 current_volume = 0.0f;
 
+            if (current_transition_gain < target_transition) {
+                current_transition_gain += 1.0f / (float)I2S_TRANSITION_RAMP_SAMPLES;
+                if (current_transition_gain > target_transition)
+                    current_transition_gain = target_transition;
+            } else if (current_transition_gain > target_transition) {
+                current_transition_gain -= 1.0f / (float)I2S_TRANSITION_RAMP_SAMPLES;
+                if (current_transition_gain < target_transition)
+                    current_transition_gain = target_transition;
+            }
+
+            const float output_gain = current_volume * current_transition_gain;
             const size_t sample = (frame_offset + frame) * 2U;
             volume_buffer[frame * 2U] =
-                scale_and_quantize(samples[sample], current_volume);
+                scale_and_quantize(samples[sample], output_gain);
             volume_buffer[frame * 2U + 1U] =
-                scale_and_quantize(samples[sample + 1U], current_volume);
+                scale_and_quantize(samples[sample + 1U], output_gain);
         }
 
         if (fabsf(target_volume - current_volume) < 1.0e-7f)

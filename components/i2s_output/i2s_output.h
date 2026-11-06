@@ -23,4 +23,9 @@ void i2s_output_deinit(void);
 // Set software volume (0.0 to 1.0)
 void i2s_output_set_volume(float volume);
 
+/* Smooth final-output transitions for DSP/preset updates and new streams. */
+void i2s_output_transition_begin(void);
+void i2s_output_transition_end(void);
+void i2s_output_request_fade_in(void);
+
 #endif // I2S_OUTPUT_H
