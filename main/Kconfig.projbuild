@@ -1,0 +1,16 @@
+menu "HihiFi Optical Input"
+
+    config HIFI_SPDIF_INPUT_ENABLE
+        bool "Enable Optical S/PDIF input"
+        default y
+
+    config HIFI_SPDIF_INPUT_GPIO
+        int "Optical receiver DATA GPIO"
+        depends on HIFI_SPDIF_INPUT_ENABLE
+        range 0 48
+        default 4
+        help
+            Connect the logic-level DATA output of the TOSLINK receiver module.
+            GPIO4 is a provisional default for ESP32-S3; verify your board wiring.
+
+endmenu
