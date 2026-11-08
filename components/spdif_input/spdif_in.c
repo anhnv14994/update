@@ -424,19 +424,27 @@ esp_err_t spdif_receiver_stop(void)
     if (g_rx_channel) {
         const esp_err_t err = rmt_disable(g_rx_channel);
         if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-            ESP_LOGW("SPDIF_IN", "RMT disable: %s", esp_err_to_name(err));
+            ESP_LOGE("SPDIF_IN", "RMT disable failed: %s", esp_err_to_name(err));
+            return err;
         }
     }
     if (g_decoder_task) vTaskNotifyGive(g_decoder_task);
     if (g_decoder_done && g_decoder_task) {
-        (void)xSemaphoreTake(g_decoder_done, pdMS_TO_TICKS(1000));
+        if (xSemaphoreTake(g_decoder_done, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            ESP_LOGE("SPDIF_IN", "Decoder task did not stop; keeping resources allocated");
+            return ESP_ERR_TIMEOUT;
+        }
     }
     return ESP_OK;
 }
 
 void spdif_receiver_deinit(void)
 {
-    (void)spdif_receiver_stop();
+    const esp_err_t stop_err = spdif_receiver_stop();
+    if (stop_err != ESP_OK) {
+        ESP_LOGE("SPDIF_IN", "Deinit aborted to avoid freeing active DMA resources");
+        return;
+    }
 
     if (g_rx_channel) {
         (void)rmt_del_channel(g_rx_channel);
