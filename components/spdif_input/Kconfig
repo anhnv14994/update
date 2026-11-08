@@ -6,7 +6,7 @@ menu "HihiFi Optical S/PDIF Input"
 
     config SPDIF_IN_RMT_MEM_BLOCK_SYMBOLS
         int "RMT DMA capture symbols"
-        default 8192
+        default 4096
         range 1024 16384
 
     config SPDIF_IN_PCM_BUFFER_SIZE
