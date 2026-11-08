@@ -21,6 +21,11 @@ menu "HihiFi Optical S/PDIF Input"
         int "Decoder task priority"
         default 3
 
+    config SPDIF_IN_DECODER_TASK_CORE
+        int "Decoder task core"
+        range 0 1
+        default 0
+
     config SPDIF_IN_HISTOGRAM_BIN_COUNT
         int "Histogram bins"
         default 256
