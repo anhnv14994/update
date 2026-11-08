@@ -197,6 +197,7 @@ static void audio_source_manager_task(void *arg)
 {
     const app_config_t *app_config = (const app_config_t *)arg;
     bool optical_active = false;
+    int64_t optical_loss_since_us = 0;
     uint32_t optical_output_rate = 44100U;
     int64_t last_raop_attempt_us = 0;
     int16_t pcm_buffer[1024];
@@ -208,6 +209,7 @@ static void audio_source_manager_task(void *arg)
         const uint32_t optical_rate = spdif_receiver_get_sample_rate();
 
         if (optical_locked && (optical_rate == 44100U || optical_rate == 48000U)) {
+            optical_loss_since_us = 0;
             if (!optical_active) {
                 ESP_LOGI(TAG, "Optical lock detected (%lu Hz): taking source priority",
                          (unsigned long)optical_rate);
@@ -270,21 +272,32 @@ static void audio_source_manager_task(void *arg)
         }
 
         if (optical_active) {
-            ESP_LOGW(TAG, "Optical lock lost: releasing source priority");
-            // No valid Optical PCM remains. Mute direct gain and restore the
-            // AirPlay engine's native 44.1 kHz clock before advertising RAOP.
+            const int64_t now_us = esp_timer_get_time();
+            if (optical_loss_since_us == 0) {
+                optical_loss_since_us = now_us;
+                ESP_LOGW(TAG, "Optical signal absent; holding priority for 2.5 s");
+            }
+
+            // Short pauses / format renegotiation must not make AirPlay steal
+            // the output. Drain stale PCM while waiting for Optical to relock.
+            if ((now_us - optical_loss_since_us) < 2500000) {
+                while (spdif_receiver_read((uint8_t *)pcm_buffer, sizeof(pcm_buffer)) > 0) {
+                    /* discard stale frames during lock debounce */
+                }
+                vTaskDelay(pdMS_TO_TICKS(10));
+                continue;
+            }
+
+            ESP_LOGW(TAG, "Optical lock lost for 2.5 s: releasing source priority");
+            i2s_output_transition_begin();
             i2s_output_set_volume(0.0f);
             (void)i2s_output_set_sample_rate(44100U);
             dsp_engine_request_stream_reset();
             if (g_stereo_ctx) stereo_spatial_request_stream_reset(g_stereo_ctx);
 
-            // Discard queued tail data so a later lock starts near real time.
-            while (spdif_receiver_read((uint8_t *)pcm_buffer, sizeof(pcm_buffer)) > 0) {
-                /* drain */
-            }
-
             optical_output_rate = 44100U;
             optical_active = false;
+            optical_loss_since_us = 0;
         }
 
         const bool network_ready =
