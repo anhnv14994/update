@@ -18,7 +18,7 @@ static rmt_channel_handle_t g_rx_channel = NULL;
 static TaskHandle_t g_decoder_task = NULL;
 static SemaphoreHandle_t g_decoder_done = NULL;
 static volatile bool g_running = false;
-static _Atomic int64_t g_last_pcm_us = 0;
+static _Atomic uint32_t g_last_pcm_ms = 0;
 static _Atomic uint32_t g_decoded_frames = 0;
 static _Atomic uint32_t g_pcm_drops = 0;
 static _Atomic uint32_t g_sample_rate_hz = 0;
@@ -34,7 +34,9 @@ RingbufHandle_t spdif_in_pcm_buffer = NULL;
 static void spdif_emit_pcm_frame(int16_t left, int16_t right)
 {
     const int16_t frame[2] = { left, right };
-    atomic_store_explicit(&g_last_pcm_us, esp_timer_get_time(), memory_order_release);
+    atomic_store_explicit(&g_last_pcm_ms,
+                          (uint32_t)(esp_timer_get_time() / 1000),
+                          memory_order_release);
     atomic_fetch_add_explicit(&g_decoded_frames, 1U, memory_order_relaxed);
 
     if (!spdif_in_pcm_buffer ||
@@ -265,7 +267,7 @@ static void spdif_decoder_task(void *arg)
                 memset(pulse_lut, 0, sizeof(pulse_lut));
                 atomic_store_explicit(&g_sample_rate_hz, 0, memory_order_release);
                 atomic_store_explicit(&g_decoded_frames, 0, memory_order_relaxed);
-                atomic_store_explicit(&g_last_pcm_us, 0, memory_order_release);
+                atomic_store_explicit(&g_last_pcm_ms, 0, memory_order_release);
                 state = bit_count = subframe_data = preamble_data = channel = 0;
                 left_sample = 0;
                 ESP_LOGI("SPDIF_IN", "Carrier gap >250 ms: reacquiring S/PDIF timing");
@@ -350,7 +352,7 @@ esp_err_t spdif_receiver_init(int input_pin, void (*init_done_cb)(void))
     if (g_rx_channel || g_decoder_task) return ESP_ERR_INVALID_STATE;
     ESP_LOGI("SPDIF_IN", "Initializing Optical RX on GPIO%d", input_pin);
 
-    atomic_store_explicit(&g_last_pcm_us, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_last_pcm_ms, 0, memory_order_relaxed);
     atomic_store_explicit(&g_decoded_frames, 0, memory_order_relaxed);
     atomic_store_explicit(&g_pcm_drops, 0, memory_order_relaxed);
     atomic_store_explicit(&g_sample_rate_hz, 0, memory_order_relaxed);
@@ -463,7 +465,7 @@ void spdif_receiver_deinit(void)
         g_decoder_done = NULL;
     }
     atomic_store_explicit(&g_sample_rate_hz, 0, memory_order_release);
-    atomic_store_explicit(&g_last_pcm_us, 0, memory_order_release);
+    atomic_store_explicit(&g_last_pcm_ms, 0, memory_order_release);
 }
 
 uint32_t spdif_receiver_get_sample_rate(void)
@@ -477,12 +479,14 @@ bool spdif_receiver_is_locked(void)
         atomic_load_explicit(&g_sample_rate_hz, memory_order_acquire);
     const uint32_t frames =
         atomic_load_explicit(&g_decoded_frames, memory_order_relaxed);
-    const int64_t last_pcm =
-        atomic_load_explicit(&g_last_pcm_us, memory_order_acquire);
-    if ((sample_rate != 44100 && sample_rate != 48000) || frames < 1024 || last_pcm <= 0) {
+    const uint32_t last_pcm_ms =
+        atomic_load_explicit(&g_last_pcm_ms, memory_order_acquire);
+    const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    if ((sample_rate != 44100 && sample_rate != 48000) ||
+        frames < 1024 || last_pcm_ms == 0) {
         return false;
     }
-    return (esp_timer_get_time() - last_pcm) < 150000;
+    return (uint32_t)(now_ms - last_pcm_ms) < 150U;
 }
 
 uint32_t spdif_receiver_get_decoded_frames(void)
