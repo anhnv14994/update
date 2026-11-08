@@ -342,12 +342,11 @@ static bool IRAM_ATTR rmt_rx_done_callback(
     (void)user_ctx;
     BaseType_t task_woken = pdFALSE;
 
-    if (edata && edata->num_symbols > 0) {
-        // Do not copy a full DMA block inside the ISR. The decoder task owns
-        // this completed buffer until it re-arms the next RMT transaction.
-        atomic_store_explicit(&g_rx_symbols_count, edata->num_symbols,
-                              memory_order_release);
-    }
+    // Publish even a zero-symbol timeout: the decoder must wake and re-arm
+    // RMT, otherwise a silent/unplugged input can stall after its first timeout.
+    const size_t completed_symbols = (edata != NULL) ? edata->num_symbols : 0;
+    atomic_store_explicit(&g_rx_symbols_count, completed_symbols,
+                          memory_order_release);
 
     if (g_decoder_task) {
         vTaskNotifyGiveFromISR(g_decoder_task, &task_woken);
