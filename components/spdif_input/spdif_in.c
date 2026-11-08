@@ -47,11 +47,20 @@ static void spdif_emit_pcm_frame(int16_t left, int16_t right)
 
 static uint32_t spdif_rate_from_timing(void)
 {
-    switch (g_timing.base_unit_ticks) {
-        case 26: return 48000; // 13-tick half-cell at 80 MHz
-        case 28: return 44100; // 14-tick half-cell at 80 MHz
-        default: return 0;
-    }
+    if (g_timing.base_unit_ticks == 0) return 0;
+
+    // One full BMC cell spans two shortest pulses and contains 1/(64*Fs).
+    // Estimate Fs from the configured RMT tick resolution, then snap only
+    // to the supported consumer rates when the estimate is within 3%.
+    const float measured_hz =
+        (float)RMT_RESOLUTION_HZ /
+        ((float)g_timing.base_unit_ticks * 64.0f);
+    const float error_44100 = fabsf(measured_hz - 44100.0f) / 44100.0f;
+    const float error_48000 = fabsf(measured_hz - 48000.0f) / 48000.0f;
+
+    if (error_44100 < error_48000 && error_44100 < 0.03f) return 44100;
+    if (error_48000 < 0.03f) return 48000;
+    return 0;
 }
 
 #define TIMING_VARIANCE 3
