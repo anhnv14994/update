@@ -22,6 +22,7 @@
 #include "esp_netif.h"
 #include "esp_ota_ops.h"
 #include "wled_sync.h"
+#include "spdif_in.h"
 
 
 static const char *TAG = "main";
@@ -29,6 +30,7 @@ static const char *TAG = "main";
 static httpd_handle_t web_server = NULL;
 static raop_handle_t *raop_handle = NULL;
 static struct udp_pcb *dns_pcb = NULL;
+static bool s_wled_sync_started = false;
 
 // PCM tap runs PEQ + Analog Character + subsonic HPF + preset master in float,
 // then quantizes to PCM16 with TPDF dither. Stereo Spatial follows in PCM16;
@@ -150,7 +152,7 @@ static void start_airplay_receiver(const app_config_t *app_config)
     ESP_LOGI(TAG, "WLED enabled: %d, host: %s, port: %u",
              app_config->wled_enabled, app_config->wled_host, app_config->wled_port);
 
-    if (app_config->wled_enabled) {
+    if (app_config->wled_enabled && !s_wled_sync_started) {
         wled_sync_config_t wled_cfg = {
             .dest_host    = app_config->wled_host,
             .dest_port    = app_config->wled_port,
@@ -160,6 +162,8 @@ static void start_airplay_receiver(const app_config_t *app_config)
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "WLED sync init failed: %s — continuing without it",
                      esp_err_to_name(err));
+        } else {
+            s_wled_sync_started = true;
         }
     }
 
@@ -180,6 +184,127 @@ static void start_airplay_receiver(const app_config_t *app_config)
     }
 
     ESP_LOGI(TAG, "AirPlay receiver started: %s", raop_get_device_name(raop_handle));
+}
+
+/*
+ * Optical has absolute source priority. RAOP is fully deinitialized while
+ * Optical is locked, so only one producer can reach the I2S output at a time.
+ * Optical Direct deliberately bypasses PEQ/Character/Spatial and preserves
+ * the detected 44.1/48 kHz clock without sample-rate conversion.
+ */
+static void audio_source_manager_task(void *arg)
+{
+    const app_config_t *app_config = (const app_config_t *)arg;
+    bool optical_active = false;
+    uint32_t optical_output_rate = 44100U;
+    int64_t last_raop_attempt_us = 0;
+    int16_t pcm_buffer[1024];
+
+    ESP_LOGI(TAG, "Audio source manager started (Optical > AirPlay)");
+
+    while (1) {
+        const bool optical_locked = spdif_receiver_is_locked();
+        const uint32_t optical_rate = spdif_receiver_get_sample_rate();
+
+        if (optical_locked && (optical_rate == 44100U || optical_rate == 48000U)) {
+            if (!optical_active) {
+                ESP_LOGI(TAG, "Optical lock detected (%lu Hz): taking source priority",
+                         (unsigned long)optical_rate);
+
+                // Fade RAOP output, then stop its producer/consumer tasks entirely.
+                i2s_output_transition_begin();
+                if (raop_handle) {
+                    const esp_err_t stop_err = raop_deinit(raop_handle);
+                    if (stop_err == ESP_OK) {
+                        raop_handle = NULL;
+                        ESP_LOGI(TAG, "AirPlay receiver deinitialized for Optical priority");
+                    } else {
+                        ESP_LOGE(TAG, "AirPlay shutdown failed: %s", esp_err_to_name(stop_err));
+                        vTaskDelay(pdMS_TO_TICKS(100));
+                        continue;
+                    }
+                }
+
+                if (i2s_output_set_sample_rate(optical_rate) != ESP_OK) {
+                    ESP_LOGE(TAG, "Cannot configure I2S for Optical sample rate %lu",
+                             (unsigned long)optical_rate);
+                    vTaskDelay(pdMS_TO_TICKS(50));
+                    continue;
+                }
+
+                // Direct source gets an independent unity-gain output setting.
+                i2s_output_set_volume(1.0f);
+                dsp_engine_request_stream_reset();
+                if (g_stereo_ctx) stereo_spatial_request_stream_reset(g_stereo_ctx);
+                i2s_output_request_fade_in();
+
+                optical_output_rate = optical_rate;
+                optical_active = true;
+            } else if (optical_rate != optical_output_rate) {
+                ESP_LOGI(TAG, "Optical sample-rate change: %lu -> %lu Hz",
+                         (unsigned long)optical_output_rate,
+                         (unsigned long)optical_rate);
+                i2s_output_transition_begin();
+                if (i2s_output_set_sample_rate(optical_rate) == ESP_OK) {
+                    optical_output_rate = optical_rate;
+                    i2s_output_request_fade_in();
+                } else {
+                    ESP_LOGE(TAG, "I2S rate switch failed; keeping previous clock");
+                    vTaskDelay(pdMS_TO_TICKS(20));
+                    continue;
+                }
+            }
+
+            const int bytes_read = spdif_receiver_read(
+                (uint8_t *)pcm_buffer, sizeof(pcm_buffer));
+            if (bytes_read >= 4) {
+                const size_t aligned_bytes = ((size_t)bytes_read) & ~(size_t)0x03U;
+                if (aligned_bytes) {
+                    i2s_output_write((const uint8_t *)pcm_buffer, aligned_bytes);
+                }
+            } else {
+                vTaskDelay(pdMS_TO_TICKS(1));
+            }
+            continue;
+        }
+
+        if (optical_active) {
+            ESP_LOGW(TAG, "Optical lock lost: releasing source priority");
+            // No valid Optical PCM remains. Mute direct gain and restore the
+            // AirPlay engine's native 44.1 kHz clock before advertising RAOP.
+            i2s_output_set_volume(0.0f);
+            (void)i2s_output_set_sample_rate(44100U);
+            dsp_engine_request_stream_reset();
+            if (g_stereo_ctx) stereo_spatial_request_stream_reset(g_stereo_ctx);
+
+            // Discard queued tail data so a later lock starts near real time.
+            while (spdif_receiver_read((uint8_t *)pcm_buffer, sizeof(pcm_buffer)) > 0) {
+                /* drain */
+            }
+
+            optical_output_rate = 44100U;
+            optical_active = false;
+        }
+
+        const bool network_ready =
+            wifi_manager_is_connected() && !wifi_manager_is_ap_mode();
+
+        if (raop_handle && !network_ready) {
+            ESP_LOGW(TAG, "Network unavailable: stopping AirPlay receiver");
+            i2s_output_transition_begin();
+            const esp_err_t stop_err = raop_deinit(raop_handle);
+            if (stop_err == ESP_OK) raop_handle = NULL;
+            else ESP_LOGE(TAG, "AirPlay shutdown failed: %s", esp_err_to_name(stop_err));
+        } else if (!raop_handle && network_ready) {
+            const int64_t now_us = esp_timer_get_time();
+            if ((now_us - last_raop_attempt_us) >= 2000000) {
+                last_raop_attempt_us = now_us;
+                start_airplay_receiver(app_config);
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
 }
 
 static void dns_recv_callback(void *arg, struct udp_pcb *pcb, struct pbuf *p,
@@ -274,10 +399,36 @@ void app_main(void)
     // Initialize I2S output
     i2s_output_init(app_config.bck_pin, app_config.ws_pin, app_config.dout_pin);
 
+#ifdef CONFIG_HIFI_SPDIF_INPUT_ENABLE
+    ret = spdif_receiver_init(CONFIG_HIFI_SPDIF_INPUT_GPIO, NULL);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Optical S/PDIF init failed: %s; AirPlay remains available",
+                 esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Optical S/PDIF listening on GPIO%d (44.1/48 kHz Direct)",
+                 CONFIG_HIFI_SPDIF_INPUT_GPIO);
+    }
+#endif
+
     // Initialize WiFi
     ESP_LOGI(TAG, "About to initialize WiFi manager...");
     wifi_manager_init();
     ESP_LOGI(TAG, "WiFi manager initialized");
+
+#ifdef CONFIG_HIFI_SPDIF_INPUT_ENABLE
+    if (xTaskCreatePinnedToCore(
+            audio_source_manager_task, "audio_source_mgr",
+            6144, &app_config, 4, NULL, 0) != pdPASS) {
+        ESP_LOGE(TAG, "Audio source manager task creation failed");
+        if (wifi_manager_is_connected() && !wifi_manager_is_ap_mode()) {
+            start_airplay_receiver(&app_config);
+        }
+    }
+#else
+    if (wifi_manager_is_connected() && !wifi_manager_is_ap_mode()) {
+        start_airplay_receiver(&app_config);
+    }
+#endif
 
     // Mark firmware as valid now that core systems are up
     // This confirms the OTA update was successful and prevents rollback
@@ -333,27 +484,12 @@ void app_main(void)
             ESP_LOGE(TAG, "DSP API registration failed: %s", esp_err_to_name(dsp_err));
         }
     }
-    bool airplay_started = false;
-
-    // Wait for WiFi connection (give it some time)
-    ESP_LOGI(TAG, "Waiting for network...");
+    ESP_LOGI(TAG, "Waiting for network while Optical source manager runs...");
     vTaskDelay(pdMS_TO_TICKS(2000));
-
-    // Wait for WiFi connection with proper timeout
-    if (!wifi_manager_is_ap_mode()) {
-
-        if (wifi_manager_is_connected()) {
-            ESP_LOGI(TAG, "Connected! IP: %s", wifi_manager_get_ip());
-
-            // Give network a moment to stabilize
-            vTaskDelay(pdMS_TO_TICKS(1000));
-
-            // Now start AirPlay receiver
-            start_airplay_receiver(&app_config);
-            airplay_started = (raop_handle != NULL);
-        } else {
-            ESP_LOGW(TAG, "WiFi is not connected yet; reconnect will continue in background");
-        }
+    if (wifi_manager_is_connected()) {
+        ESP_LOGI(TAG, "Connected! IP: %s", wifi_manager_get_ip());
+    } else {
+        ESP_LOGI(TAG, "WiFi connection pending; Optical input remains available");
     }
 
     ESP_LOGI(TAG, "System ready!");
@@ -367,18 +503,6 @@ void app_main(void)
     // Main loop - could add status monitoring here
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(10000));
-
-        /*
-         * A delayed WiFi recovery must still bring AirPlay online. Previously,
-         * missing the initial 120-second window left the receiver stopped forever.
-         */
-        if (!airplay_started && !wifi_manager_is_ap_mode() &&
-            wifi_manager_is_connected()) {
-            ESP_LOGI(TAG, "WiFi recovered after startup wait; starting AirPlay...");
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            start_airplay_receiver(&app_config);
-            airplay_started = (raop_handle != NULL);
-        }
 
         // Periodic status log
         ESP_LOGI(TAG, "Status: WiFi=%s, IP=%s",
