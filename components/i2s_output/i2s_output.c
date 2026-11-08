@@ -25,6 +25,17 @@ static int16_t volume_buffer[I2S_VOLUME_BUFFER_SAMPLES];
 static uint32_t dither_rng = 0x6D2B79F5U;
 
 static i2s_chan_handle_t tx_handle = NULL;
+static uint32_t output_sample_rate_hz = 44100U;
+
+static inline float volume_ramp_alpha(void)
+{
+    return 1.0f - expf(-1.0f / (0.008f * (float)output_sample_rate_hz));
+}
+
+static inline float transition_ramp_step(void)
+{
+    return 100.0f / (float)output_sample_rate_hz;
+}
 
 static inline float dither_uniform(void)
 {
@@ -158,6 +169,54 @@ void i2s_output_init(int bck_pin, int ws_pin, int dout_pin)
     ESP_LOGI(TAG, "I2S initialized successfully; final volume stage enabled");
 }
 
+esp_err_t i2s_output_set_sample_rate(uint32_t sample_rate_hz)
+{
+    if (!tx_handle) return ESP_ERR_INVALID_STATE;
+    if (sample_rate_hz != 44100U && sample_rate_hz != 48000U)
+        return ESP_ERR_INVALID_ARG;
+    if (sample_rate_hz == output_sample_rate_hz) return ESP_OK;
+
+    esp_err_t err = i2s_channel_disable(tx_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "I2S disable for rate change failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    i2s_std_clk_config_t clk_cfg = {
+        .sample_rate_hz = sample_rate_hz,
+        .clk_src = I2S_CLK_SRC_XTAL,
+        .mclk_multiple = I2S_MCLK_MULTIPLE_256,
+    };
+
+    err = i2s_channel_reconfig_std_clock(tx_handle, &clk_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "I2S clock reconfiguration to %lu Hz failed: %s",
+                 (unsigned long)sample_rate_hz, esp_err_to_name(err));
+        const esp_err_t restore_err = i2s_channel_enable(tx_handle);
+        if (restore_err != ESP_OK)
+            ESP_LOGE(TAG, "I2S re-enable after rate failure: %s",
+                     esp_err_to_name(restore_err));
+        return err;
+    }
+
+    output_sample_rate_hz = sample_rate_hz;
+    err = i2s_channel_enable(tx_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "I2S re-enable at %lu Hz failed: %s",
+                 (unsigned long)sample_rate_hz, esp_err_to_name(err));
+        return err;
+    }
+
+    ESP_LOGI(TAG, "I2S output clock changed to %lu Hz",
+             (unsigned long)sample_rate_hz);
+    return ESP_OK;
+}
+
+uint32_t i2s_output_get_sample_rate(void)
+{
+    return output_sample_rate_hz;
+}
+
 void i2s_output_write(const uint8_t *data, size_t len)
 {
     if (!tx_handle) {
@@ -213,11 +272,11 @@ void i2s_output_write(const uint8_t *data, size_t len)
                 current_volume = 0.0f;
 
             if (current_transition_gain < target_transition) {
-                current_transition_gain += 1.0f / (float)I2S_TRANSITION_RAMP_SAMPLES;
+                current_transition_gain += transition_step;
                 if (current_transition_gain > target_transition)
                     current_transition_gain = target_transition;
             } else if (current_transition_gain > target_transition) {
-                current_transition_gain -= 1.0f / (float)I2S_TRANSITION_RAMP_SAMPLES;
+                current_transition_gain -= transition_step;
                 if (current_transition_gain < target_transition)
                     current_transition_gain = target_transition;
             }
