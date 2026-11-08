@@ -2,6 +2,7 @@
 #define I2S_OUTPUT_H
 
 #include <stdint.h>
+#include "esp_err.h"
 #include <stddef.h>
 
 /**
@@ -13,6 +14,8 @@
  * @param dout_pin Data out pin
  */
 void i2s_output_init(int bck_pin, int ws_pin, int dout_pin);
+esp_err_t i2s_output_set_sample_rate(uint32_t sample_rate_hz);
+uint32_t i2s_output_get_sample_rate(void);
 
 // Write PCM audio data to I2S
 void i2s_output_write(const uint8_t *data, size_t len);
