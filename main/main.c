@@ -433,7 +433,7 @@ void app_main(void)
 #ifdef CONFIG_HIFI_SPDIF_INPUT_ENABLE
     if (xTaskCreatePinnedToCore(
             audio_source_manager_task, "audio_source_mgr",
-            6144, &app_config, 4, NULL, 0) == pdPASS) {
+            8192, &app_config, 4, NULL, 1) == pdPASS) {
         s_audio_source_manager_started = true;
     } else {
         ESP_LOGE(TAG, "Audio source manager task creation failed; enabling AirPlay fallback");
