@@ -13,8 +13,6 @@
 static const char *TAG = "i2s_output";
 
 #define I2S_VOLUME_BUFFER_SAMPLES 1024U /* 512 stereo frames / 2048 bytes */
-#define I2S_VOLUME_RAMP_ALPHA       0.002830453811f /* 8 ms at 44.1 kHz, once per frame */
-#define I2S_TRANSITION_RAMP_SAMPLES 441U /* 10 ms at 44.1 kHz */
 
 static _Atomic uint32_t target_volume_q = 50000U; /* RAOP startup default: 0.05 */
 static float current_volume = 0.05f;             /* Owned by the I2S output task. */
@@ -234,6 +232,8 @@ void i2s_output_write(const uint8_t *data, size_t len)
         &target_volume_q, memory_order_acquire) * 0.000001f;
     const float target_transition = (float)atomic_load_explicit(
         &target_transition_q, memory_order_acquire) * 0.000001f;
+    const float ramp_alpha = volume_ramp_alpha();
+    const float transition_step = transition_ramp_step();
 
     /* Exact unity bypass: no copy, no dither, no extra arithmetic. */
     if (target_volume >= 0.999999f && current_volume >= 0.999999f &&
@@ -266,7 +266,7 @@ void i2s_output_write(const uint8_t *data, size_t len)
 
         for (size_t frame = 0; frame < chunk_frames; ++frame) {
             /* Update AirPlay and transition gains ONCE per stereo frame. */
-            current_volume += I2S_VOLUME_RAMP_ALPHA *
+            current_volume += ramp_alpha *
                 (target_volume - current_volume);
             if (target_volume <= 0.0f && current_volume < 0.0001f)
                 current_volume = 0.0f;
