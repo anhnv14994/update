@@ -311,8 +311,8 @@ static void spdif_decoder_task(void *arg)
     }
 
 task_exit:
-    g_decoder_task = NULL;
     if (g_decoder_done) xSemaphoreGive(g_decoder_done);
+    g_decoder_task = NULL;
     vTaskDelete(NULL);
 }
 
