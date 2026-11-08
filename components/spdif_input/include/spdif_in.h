@@ -51,7 +51,6 @@ uint32_t spdif_receiver_get_sample_rate(void);
 bool spdif_receiver_is_locked(void);
 uint32_t spdif_receiver_get_decoded_frames(void);
 uint32_t spdif_receiver_get_pcm_drops(void);
-uint32_t spdif_receiver_get_symbol_drops(void);
 
 inline static RingbufHandle_t spdif_in_get_ringbuf(){
     return spdif_in_pcm_buffer;
