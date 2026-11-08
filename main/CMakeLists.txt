@@ -11,6 +11,7 @@ idf_component_register(
         driver
         wifi_provisioning
         i2s_output
+        spdif_input
         esp-raop-receiver
         wled_sync
         dsp_engine
