@@ -6,7 +6,7 @@ Optical input for ESP32-S3 using a TOSLINK receiver module whose DATA pin provid
 ## Current bring-up scope
 
 - ESP-IDF 5.2.x finite RMT RX transactions with DMA.
-- Dedicated decoder task; RMT ISR only publishes the completed DMA symbol count.
+- Dedicated decoder task (core 0 by default); RMT ISR only publishes the completed DMA symbol count. Core 1 remains available for the I2S source/output path.
 - Timing acquisition and Biphase-Mark decode adapted from netham45/esp32-spdif.
 - PCM output: interleaved stereo signed 16-bit.
 - Detected rates: 44.1 kHz and 48 kHz only.
