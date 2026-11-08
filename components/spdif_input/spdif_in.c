@@ -21,7 +21,6 @@ static volatile bool g_running = false;
 static _Atomic int64_t g_last_pcm_us = 0;
 static _Atomic uint32_t g_decoded_frames = 0;
 static _Atomic uint32_t g_pcm_drops = 0;
-static _Atomic uint32_t g_symbol_drops = 0;
 static _Atomic uint32_t g_sample_rate_hz = 0;
 static rmt_symbol_word_t *g_rmt_buffer = NULL;
 static _Atomic size_t g_rx_symbols_count = 0;
@@ -294,6 +293,12 @@ static void spdif_decoder_task(void *arg)
 
         }
 
+        // An absent optical carrier can complete each RX transaction by timeout.
+        // Back off instead of spinning the CPU while Optical is unplugged/idle.
+        if (num_symbols == 0 && g_running) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+
         // On IDF 5.2 the RX transaction completes on buffer-full or signal
         // timeout. Re-arm from task context; the BMC preamble re-synchronizes
         // the decoder after the short gap between transactions.
@@ -348,7 +353,6 @@ esp_err_t spdif_receiver_init(int input_pin, void (*init_done_cb)(void))
     atomic_store_explicit(&g_last_pcm_us, 0, memory_order_relaxed);
     atomic_store_explicit(&g_decoded_frames, 0, memory_order_relaxed);
     atomic_store_explicit(&g_pcm_drops, 0, memory_order_relaxed);
-    atomic_store_explicit(&g_symbol_drops, 0, memory_order_relaxed);
     atomic_store_explicit(&g_sample_rate_hz, 0, memory_order_relaxed);
 
     spdif_in_pcm_buffer = xRingbufferCreate(SPDIF_PCM_BUFFER_SIZE, RINGBUF_TYPE_BYTEBUF);
@@ -483,7 +487,3 @@ uint32_t spdif_receiver_get_pcm_drops(void)
     return atomic_load_explicit(&g_pcm_drops, memory_order_relaxed);
 }
 
-uint32_t spdif_receiver_get_symbol_drops(void)
-{
-    return atomic_load_explicit(&g_symbol_drops, memory_order_relaxed);
-}
