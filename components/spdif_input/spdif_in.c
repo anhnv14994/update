@@ -271,7 +271,7 @@ static void spdif_decoder_task(void *arg)
 
             // A long loss of carrier starts a fresh acquisition window. This
             // also allows a 44.1 <-> 48 kHz source change to be re-detected.
-            if (last_batch_us != 0 && (now_us - last_batch_us) > 250000) {
+            if (last_batch_us != 0 && (now_us - last_batch_us) > 100000) {
                 memset(&g_timing, 0, sizeof(g_timing));
                 memset(pulse_lut, 0, sizeof(pulse_lut));
                 atomic_store_explicit(&g_sample_rate_hz, 0, memory_order_release);
@@ -279,7 +279,7 @@ static void spdif_decoder_task(void *arg)
                 atomic_store_explicit(&g_last_pcm_ms, 0, memory_order_release);
                 state = bit_count = subframe_data = preamble_data = channel = 0;
                 left_sample = 0;
-                ESP_LOGI("SPDIF_IN", "Carrier gap >250 ms: reacquiring S/PDIF timing");
+                ESP_LOGI("SPDIF_IN", "Carrier gap >100 ms: reacquiring S/PDIF timing");
             }
             last_batch_us = now_us;
 
