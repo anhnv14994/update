@@ -1,0 +1,60 @@
+menu "HihiFi Optical S/PDIF Input"
+
+    config SPDIF_IN_RMT_RESOLUTION_HZ
+        int "RMT resolution (Hz)"
+        default 80000000
+
+    config SPDIF_IN_RMT_MEM_BLOCK_SYMBOLS
+        int "RMT DMA capture symbols"
+        default 8192
+        range 1024 16384
+
+    config SPDIF_IN_SYMBOL_BUFFER_SIZE
+        int "Symbol ring-buffer capacity (symbols)"
+        default 8192
+
+    config SPDIF_IN_PCM_BUFFER_SIZE
+        int "PCM ring-buffer capacity (bytes)"
+        default 32768
+
+    config SPDIF_IN_DECODER_TASK_STACK
+        int "Decoder task stack (bytes)"
+        default 8192
+
+    config SPDIF_IN_DECODER_TASK_PRIORITY
+        int "Decoder task priority"
+        default 3
+
+    config SPDIF_IN_HISTOGRAM_BIN_COUNT
+        int "Histogram bins"
+        default 256
+
+    config SPDIF_IN_MAX_PULSE_WIDTH_NS
+        int "Maximum pulse width tracked (ns)"
+        default 2000
+
+    config SPDIF_IN_MIN_SAMPLES_FOR_ANALYSIS
+        int "Minimum timing samples"
+        default 10000
+
+    config SPDIF_IN_PULSE_RATIO_TOLERANCE_MILLIPCT
+        int "Pulse ratio tolerance (milli-fraction)"
+        default 150
+
+    config SPDIF_IN_EXPECTED_SHORT_PULSE_PCT_TENTHS
+        int "Expected short-pulse distribution (tenths of percent)"
+        default 600
+
+    config SPDIF_IN_EXPECTED_MEDIUM_PULSE_PCT_TENTHS
+        int "Expected medium-pulse distribution (tenths of percent)"
+        default 350
+
+    config SPDIF_IN_EXPECTED_LONG_PULSE_PCT_TENTHS
+        int "Expected long-pulse distribution (tenths of percent)"
+        default 50
+
+    config SPDIF_IN_DISTRIBUTION_TOLERANCE_PCT
+        int "Pulse distribution tolerance (percent)"
+        default 100
+
+endmenu
