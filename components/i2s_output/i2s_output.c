@@ -175,7 +175,7 @@ esp_err_t i2s_output_set_sample_rate(uint32_t sample_rate_hz)
     if (sample_rate_hz == output_sample_rate_hz) return ESP_OK;
 
     esp_err_t err = i2s_channel_disable(tx_handle);
-    if (err != ESP_OK) {
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "I2S disable for rate change failed: %s", esp_err_to_name(err));
         return err;
     }
@@ -197,7 +197,6 @@ esp_err_t i2s_output_set_sample_rate(uint32_t sample_rate_hz)
         return err;
     }
 
-    output_sample_rate_hz = sample_rate_hz;
     err = i2s_channel_enable(tx_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "I2S re-enable at %lu Hz failed: %s",
@@ -205,6 +204,7 @@ esp_err_t i2s_output_set_sample_rate(uint32_t sample_rate_hz)
         return err;
     }
 
+    output_sample_rate_hz = sample_rate_hz;
     ESP_LOGI(TAG, "I2S output clock changed to %lu Hz",
              (unsigned long)sample_rate_hz);
     return ESP_OK;
