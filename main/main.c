@@ -32,6 +32,7 @@ static httpd_handle_t web_server = NULL;
 static raop_handle_t *raop_handle = NULL;
 static struct udp_pcb *dns_pcb = NULL;
 static bool s_wled_sync_started = false;
+static bool s_audio_source_manager_started = false;
 
 // PCM tap runs PEQ + Analog Character + subsonic HPF + preset master in float,
 // then quantizes to PCM16 with TPDF dither. Stereo Spatial follows in PCM16;
@@ -432,8 +433,10 @@ void app_main(void)
 #ifdef CONFIG_HIFI_SPDIF_INPUT_ENABLE
     if (xTaskCreatePinnedToCore(
             audio_source_manager_task, "audio_source_mgr",
-            6144, &app_config, 4, NULL, 0) != pdPASS) {
-        ESP_LOGE(TAG, "Audio source manager task creation failed");
+            6144, &app_config, 4, NULL, 0) == pdPASS) {
+        s_audio_source_manager_started = true;
+    } else {
+        ESP_LOGE(TAG, "Audio source manager task creation failed; enabling AirPlay fallback");
         if (wifi_manager_is_connected() && !wifi_manager_is_ap_mode()) {
             start_airplay_receiver(&app_config);
         }
@@ -517,6 +520,13 @@ void app_main(void)
     // Main loop - could add status monitoring here
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(10000));
+
+        // Preserve the original delayed-WiFi recovery when Optical is disabled
+        // or the source-manager task could not be created.
+        if (!s_audio_source_manager_started && !raop_handle &&
+            wifi_manager_is_connected() && !wifi_manager_is_ap_mode()) {
+            start_airplay_receiver(&app_config);
+        }
 
         // Periodic status log
         ESP_LOGI(TAG, "Status: WiFi=%s, IP=%s",
