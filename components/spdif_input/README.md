@@ -12,8 +12,9 @@ Optical input for ESP32-S3 using a TOSLINK receiver module whose DATA pin provid
 - Detected rates: 44.1 kHz and 48 kHz only.
 - Optical Direct currently bypasses PEQ, Analog Character, and Stereo Spatial.
 - I2S clock follows the detected nominal rate. The current phase is a bring-up
-  implementation; long-duration clock-drift compensation and hardware soak
-  testing remain required before calling it production-stable.
+  implementation. The recovered input clock and ESP32 I2S clock are independent;
+  long-duration clock-drift compensation and hardware soak testing remain
+  required before calling it production-stable.
 
 ## Configuration
 
