@@ -164,7 +164,8 @@ void analyze_pulse_timing(void)
         g_timing.last_validation = validation;
 
         if (validation.groups_identified && validation.ratios_valid && validation.distribution_valid) {
-            g_timing.base_unit_ticks = (uint32_t)(selected_peaks[0].center * 2); // Short pulse is 0.5T
+            g_timing.base_unit_ticks =
+                ((uint32_t)(selected_peaks[0].center + 0.5f)) * 2U; // Full BMC cell in 80 MHz ticks
             g_timing.short_pulse_ticks = (uint32_t)selected_peaks[0].center;     // 0.5T
             g_timing.medium_pulse_ticks = (uint32_t)selected_peaks[1].center;    // 1.0T
             g_timing.long_pulse_ticks = (uint32_t)selected_peaks[2].center;      // 1.5T
