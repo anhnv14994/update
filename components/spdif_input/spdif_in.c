@@ -413,7 +413,7 @@ esp_err_t spdif_receiver_init(int input_pin, void (*init_done_cb)(void))
     if (xTaskCreatePinnedToCore(
             spdif_decoder_task, "spdif_decoder",
             DECODER_TASK_STACK, NULL, DECODER_TASK_PRIORITY,
-            &g_decoder_task, 1) != pdPASS) {
+            &g_decoder_task, DECODER_TASK_CORE) != pdPASS) {
         g_running = false;
         spdif_receiver_deinit();
         return ESP_ERR_NO_MEM;
