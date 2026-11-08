@@ -23,8 +23,8 @@ static _Atomic uint32_t g_decoded_frames = 0;
 static _Atomic uint32_t g_pcm_drops = 0;
 static _Atomic uint32_t g_symbol_drops = 0;
 static _Atomic uint32_t g_sample_rate_hz = 0;
-static RingbufHandle_t g_symbol_buffer = NULL;
 static rmt_symbol_word_t *g_rmt_buffer = NULL;
+static _Atomic size_t g_rx_symbols_count = 0;
 static rmt_receive_config_t g_rx_config;
 
 // 256-byte LUT for pulse classification
@@ -253,11 +253,10 @@ static void spdif_decoder_task(void *arg)
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         if (!g_running) break;
 
-        size_t rx_size = 0;
-        rmt_symbol_word_t *symbols =
-            (rmt_symbol_word_t *)xRingbufferReceive(g_symbol_buffer, &rx_size, 0);
-
-        while (symbols) {
+        const size_t num_symbols = atomic_exchange_explicit(
+            &g_rx_symbols_count, 0, memory_order_acq_rel);
+        if (num_symbols > 0 && g_rmt_buffer) {
+            rmt_symbol_word_t *symbols = g_rmt_buffer;
             const int64_t now_us = esp_timer_get_time();
 
             // A long loss of carrier starts a fresh acquisition window. This
@@ -274,7 +273,6 @@ static void spdif_decoder_task(void *arg)
             }
             last_batch_us = now_us;
 
-            const size_t num_symbols = rx_size / sizeof(rmt_symbol_word_t);
             if (!g_timing.timing_discovered) {
                 collect_pulse_histogram(symbols, num_symbols);
                 if (g_timing.total_samples >= MIN_SAMPLES_FOR_ANALYSIS) {
@@ -294,8 +292,6 @@ static void spdif_decoder_task(void *arg)
                 }
             }
 
-            vRingbufferReturnItem(g_symbol_buffer, (void *)symbols);
-            symbols = (rmt_symbol_word_t *)xRingbufferReceive(g_symbol_buffer, &rx_size, 0);
         }
 
         // On IDF 5.2 the RX transaction completes on buffer-full or signal
@@ -330,15 +326,11 @@ static bool IRAM_ATTR rmt_rx_done_callback(
     (void)user_ctx;
     BaseType_t task_woken = pdFALSE;
 
-    if (edata && edata->num_symbols > 0 && g_symbol_buffer) {
-        const BaseType_t queued = xRingbufferSendFromISR(
-            g_symbol_buffer,
-            edata->received_symbols,
-            edata->num_symbols * sizeof(rmt_symbol_word_t),
-            &task_woken);
-        if (queued != pdTRUE) {
-            atomic_fetch_add_explicit(&g_symbol_drops, 1U, memory_order_relaxed);
-        }
+    if (edata && edata->num_symbols > 0) {
+        // Do not copy a full DMA block inside the ISR. The decoder task owns
+        // this completed buffer until it re-arms the next RMT transaction.
+        atomic_store_explicit(&g_rx_symbols_count, edata->num_symbols,
+                              memory_order_release);
     }
 
     if (g_decoder_task) {
@@ -362,21 +354,11 @@ esp_err_t spdif_receiver_init(int input_pin, void (*init_done_cb)(void))
     spdif_in_pcm_buffer = xRingbufferCreate(SPDIF_PCM_BUFFER_SIZE, RINGBUF_TYPE_BYTEBUF);
     if (!spdif_in_pcm_buffer) return ESP_ERR_NO_MEM;
 
-    g_symbol_buffer = xRingbufferCreate(
-        SYMBOL_BUFFER_SIZE * sizeof(rmt_symbol_word_t), RINGBUF_TYPE_BYTEBUF);
-    if (!g_symbol_buffer) {
-        vRingbufferDelete(spdif_in_pcm_buffer);
-        spdif_in_pcm_buffer = NULL;
-        return ESP_ERR_NO_MEM;
-    }
-
     g_rmt_buffer = heap_caps_malloc(
         RMT_MEM_BLOCK_SYMBOLS * sizeof(rmt_symbol_word_t),
         MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     if (!g_rmt_buffer) {
-        vRingbufferDelete(g_symbol_buffer);
         vRingbufferDelete(spdif_in_pcm_buffer);
-        g_symbol_buffer = NULL;
         spdif_in_pcm_buffer = NULL;
         return ESP_ERR_NO_MEM;
     }
@@ -459,10 +441,6 @@ void spdif_receiver_deinit(void)
     if (g_rmt_buffer) {
         heap_caps_free(g_rmt_buffer);
         g_rmt_buffer = NULL;
-    }
-    if (g_symbol_buffer) {
-        vRingbufferDelete(g_symbol_buffer);
-        g_symbol_buffer = NULL;
     }
     if (spdif_in_pcm_buffer) {
         vRingbufferDelete(spdif_in_pcm_buffer);
