@@ -201,6 +201,7 @@ static void audio_source_manager_task(void *arg)
     int64_t optical_loss_since_us = 0;
     uint32_t optical_output_rate = 44100U;
     int64_t last_raop_attempt_us = 0;
+    int64_t last_optical_stats_us = 0;
     int16_t pcm_buffer[1024];
 
     ESP_LOGI(TAG, "Audio source manager started (Optical > AirPlay)");
@@ -257,6 +258,15 @@ static void audio_source_manager_task(void *arg)
                     vTaskDelay(pdMS_TO_TICKS(20));
                     continue;
                 }
+            }
+
+            const int64_t stats_now_us = esp_timer_get_time();
+            if ((stats_now_us - last_optical_stats_us) >= 5000000) {
+                last_optical_stats_us = stats_now_us;
+                ESP_LOGI(TAG, "Optical Direct: %lu Hz, decoded=%lu frames, pcm_drops=%lu",
+                         (unsigned long)optical_output_rate,
+                         (unsigned long)spdif_receiver_get_decoded_frames(),
+                         (unsigned long)spdif_receiver_get_pcm_drops());
             }
 
             const int bytes_read = spdif_receiver_read(
