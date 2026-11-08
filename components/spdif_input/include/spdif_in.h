@@ -1,6 +1,9 @@
 #ifndef SPDIF_H
 #define SPDIF_H
 
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 #include "sdkconfig.h"
 #include "esp_err.h"
 #include "freertos/ringbuf.h"
