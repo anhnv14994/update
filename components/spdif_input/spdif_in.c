@@ -46,8 +46,8 @@ static void spdif_emit_pcm_frame(int16_t left, int16_t right)
 static uint32_t spdif_rate_from_timing(void)
 {
     switch (g_timing.base_unit_ticks) {
-        case 13: return 48000;
-        case 14: return 44100;
+        case 26: return 48000; // 13-tick half-cell at 80 MHz
+        case 28: return 44100; // 14-tick half-cell at 80 MHz
         default: return 0;
     }
 }
