@@ -954,7 +954,7 @@ static cJSON *build_state_json(void)
     dsp_engine_get_dynamic_loudness_calibration(
         &dynamic_reference_spl, NULL);
     cJSON_AddBoolToObject(root, "dynamic_calibrated",
-                          dynamic_reference_spl >= 35U && dynamic_reference_spl <= 90U);
+                          dynamic_reference_spl >= 35U && dynamic_reference_spl <= 80U);
     cJSON_AddNumberToObject(root, "dynamic_reference_spl_db",
                             dynamic_reference_spl);
 
