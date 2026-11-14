@@ -526,7 +526,7 @@ input[type=range]::-moz-range-thumb{
   <div class="titlebar">
     DSP <span>SOUND</span>
     <div style="font-size:9px;letter-spacing:1.5px;color:#e0b155;margin-top:6px;">
-      V6.7 · FLOAT VOLUME · CHARACTER REFINEMENT · SUBSONIC HPF 30 HZ / 24 DB/OCT
+      V6.8 · VOLUME-ADAPTIVE BASS · 11 KHZ TREBLE · CHARACTER REFINEMENT
     </div>
   </div>
 
@@ -708,12 +708,17 @@ input[type=range]::-moz-range-thumb{
       </div>
       <div class="peq-subtitle">A/B độc lập. Tăng strength làm hiệu ứng transient rõ hơn, không phải treble shelf liên tục. Bắt đầu thấp; HF B có spectral guard nhẹ. Mix ramp 8 ms.</div>
 
-      <div class="character-diag-title">Dynamic Loudness · lưu theo preset</div>
+      <div class="character-diag-title">Volume-adaptive tone · lưu theo preset</div>
       <div class="feature">
-        <div class="feature-text"><div class="feature-name">Low-volume compensation</div><div class="feature-info">Bù nhẹ bass và air khi volume AirPlay thấp; OFF mặc định để giữ đáp tuyến phẳng.</div></div>
+        <div class="feature-text"><div class="feature-name">Adaptive bass + treble</div><div class="feature-info">Bass chỉ được cộng thêm khi nghe nhỏ; mở lớn sẽ trở về mức gốc, không tự cắt bass. Treble quanh 11 kHz tăng khi nghe nhỏ và dịu xuống khi mở lớn.</div></div>
         <label class="switch"><input type="checkbox" id="dynamicLoudnessEnabled"><span class="slider-toggle"></span></label>
       </div>
-      <div class="peq-subtitle">Chỉ bù khi mức phát nhỏ hơn mốc tham chiếu khoảng −6 dB theo AirPlay volume × master preset (không phải hiệu chuẩn SPL). ON: tối đa +3 dB vùng thấp quanh 110 Hz và +1 dB trên 9 kHz; giúp nghe đầy hơn ở volume nhỏ. OFF: giữ đáp tuyến không bù. Lưu ON/OFF theo preset.</div>
+      <div class="band">
+        <div class="band-head"><span class="freq-role">MAX BASS BOOST</span><span class="gain-val" id="dynamicBassMaxDbVal">4 dB</span></div>
+        <input type="range" min="0" max="5" step="1" value="4" id="dynamicBassMaxDb">
+        <div class="peq-subtitle">0–5 dB · 1 dB mỗi nấc. Đây là mức bù tối đa ở volume nhỏ; thuật toán tự giảm dần về 0 dB khi tăng âm lượng. Chọn 0 để tắt riêng phần bù bass.</div>
+      </div>
+      <div class="peq-subtitle">Mốc tham chiếu khoảng −6 dB theo AirPlay volume × master preset (không phải SPL đã hiệu chuẩn). Khi bật: bass tối đa theo thanh kéo, chỉ boost và không bị cắt khi mở lớn; treble dùng vùng chuyển tiếp 11 kHz, tối đa khoảng +1.5 dB lúc nhỏ và −2 dB lúc lớn. Khi tắt: cả hai đường bù trở về 0 dB. Trạng thái và mức bass được lưu theo từng preset.</div>
 
       <div class="character-diag-title">Processing time · µs per 352-sample frame</div>
       <div class="peq-subtitle">Cycle-counter elapsed time; may include scheduler preemption, so compare relative stage cost.</div>
@@ -1638,6 +1643,9 @@ function renderCharacter(){
   document.getElementById("characterHfBEnabled").checked = !!c.hf_b_enabled;
   document.getElementById("dynamicLoudnessEnabled").checked =
     !!(state && state.dynamic_loudness_enabled);
+  const bassMaxDb = Math.max(0, Math.min(5, Number((state && state.dynamic_bass_max_db) ?? 4)));
+  document.getElementById("dynamicBassMaxDb").value = bassMaxDb;
+  document.getElementById("dynamicBassMaxDbVal").textContent = \`\${bassMaxDb} dB\`;
   const hfAStrength = Math.max(0, Math.min(100, Number(c.hf_a_strength_pct ?? 0)));
   const hfBStrength = Math.max(0, Math.min(100, Number(c.hf_b_strength_pct ?? 0)));
   document.getElementById("characterHfAStrength").value = hfAStrength;
@@ -1775,10 +1783,26 @@ document.getElementById("dynamicLoudnessEnabled").addEventListener("change", asy
   try {
     state = await api("/api/dsp/loudness", {enabled: e.target.checked});
     renderCharacter();
-    setStatus("Dynamic Loudness " + (e.target.checked ? "ON" : "OFF"));
+    setStatus("Volume-adaptive tone " + (e.target.checked ? "ON" : "OFF"));
   } catch (err) {
     console.error(err);
-    setStatus("Không thể cập nhật Dynamic Loudness");
+    setStatus("Không thể cập nhật volume-adaptive tone");
+    await refresh();
+  }
+});
+
+document.getElementById("dynamicBassMaxDb").addEventListener("input", e => {
+  document.getElementById("dynamicBassMaxDbVal").textContent = \`\${e.target.value} dB\`;
+});
+
+document.getElementById("dynamicBassMaxDb").addEventListener("change", async e => {
+  try {
+    state = await api("/api/dsp/loudness", {bass_max_db: Number(e.target.value)});
+    renderCharacter();
+    setStatus("Mức bù bass tối đa: " + e.target.value + " dB");
+  } catch (err) {
+    console.error(err);
+    setStatus("Không thể cập nhật mức bù bass");
     await refresh();
   }
 });
