@@ -533,7 +533,7 @@ static inline float iso226_spl_db(
 {
     phon = clampf_local(phon, 20.0f, 80.0f);
     const float loudness_term =
-        powf(10.0f, 0.03f * phon) - 10.0f * 0.072f;
+        powf(10.0f, 0.03f * phon) - powf(10.0f, 0.072f);
     const float transfer_term =
         powf(4.0e-10f, 0.3f - alpha_f) * loudness_term;
     const float threshold_term =
@@ -1893,7 +1893,7 @@ esp_err_t dsp_engine_set_dynamic_loudness_calibration(
     uint8_t reference_spl_db, float reference_gain)
 {
     if ((reference_spl_db != 0U &&
-         (reference_spl_db < 35U || reference_spl_db > 90U)) ||
+         (reference_spl_db < 35U || reference_spl_db > 80U)) ||
         !isfinite(reference_gain) ||
         reference_gain < 0.001f || reference_gain > 2.0f) {
         return ESP_ERR_INVALID_ARG;
