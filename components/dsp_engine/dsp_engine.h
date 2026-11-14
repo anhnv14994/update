@@ -156,6 +156,8 @@ float     dsp_engine_get_output_volume(void);
 /* Low-volume compensation; state is stored with the selected preset. OFF by default. */
 esp_err_t dsp_engine_set_dynamic_loudness(bool enabled);
 bool      dsp_engine_get_dynamic_loudness(void);
+esp_err_t dsp_engine_set_dynamic_bass_max_db(uint8_t max_db);
+uint8_t   dsp_engine_get_dynamic_bass_max_db(void);
 
 /* ============================================================
  * Active preset
