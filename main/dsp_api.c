@@ -585,7 +585,7 @@ static esp_err_t apply_preset_options(dsp_preset_id_t id)
         blob.dynamic_loudness_enabled > 1U ||
         blob.dynamic_bass_max_db > 5U ||
         (blob.dynamic_reference_spl_db != 0U &&
-         (blob.dynamic_reference_spl_db < 35U || blob.dynamic_reference_spl_db > 90U)) ||
+         (blob.dynamic_reference_spl_db < 35U || blob.dynamic_reference_spl_db > 80U)) ||
         blob.dynamic_reference_gain_q < 1000U ||
         blob.dynamic_reference_gain_q > 2000000U ||
         blob.spatial_mode > STEREO_SPATIAL_MODE_WIDE ||
@@ -951,9 +951,8 @@ static cJSON *build_state_json(void)
     cJSON_AddNumberToObject(root, "dynamic_bass_max_db",
                             dsp_engine_get_dynamic_bass_max_db());
     uint8_t dynamic_reference_spl = 0U;
-    float dynamic_reference_gain = 0.5f;
     dsp_engine_get_dynamic_loudness_calibration(
-        &dynamic_reference_spl, &dynamic_reference_gain);
+        &dynamic_reference_spl, NULL);
     cJSON_AddBoolToObject(root, "dynamic_calibrated",
                           dynamic_reference_spl >= 35U && dynamic_reference_spl <= 90U);
     cJSON_AddNumberToObject(root, "dynamic_reference_spl_db",
@@ -1413,7 +1412,7 @@ static esp_err_t api_loudness_handler(httpd_req_t *req)
          (double)bass_max->valueint != bass_max->valuedouble)) ||
         (calibrate && !cJSON_IsBool(calibrate)) ||
         (reference_spl && (!cJSON_IsNumber(reference_spl) ||
-         reference_spl->valuedouble < 35.0 || reference_spl->valuedouble > 90.0 ||
+         reference_spl->valuedouble < 35.0 || reference_spl->valuedouble > 80.0 ||
          (double)reference_spl->valueint != reference_spl->valuedouble))) {
         cJSON_Delete(body);
         return send_error_json(req, 400, "invalid loudness setting or SPL calibration value");
