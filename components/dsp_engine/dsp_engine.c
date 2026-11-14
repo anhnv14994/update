@@ -505,8 +505,14 @@ static inline void character_calculate_gain_coeffs(
     out->h2_gain[0] = 0.190f * warmth * drive * asymmetry_0;
     out->h2_gain[1] = 0.105f * warmth * drive * asymmetry_1;
     out->h3_gain[0] = 0.0f;
-    /* A modest +3.5 dB sensitivity increase makes Detail useful at normal settings. */
-    out->h3_gain[1] = 0.075f * detail * drive;
+    /*
+     * Keep H3 referenced to Stage-2 H2 rather than using a fixed absolute gain.
+     * Detail shapes H3 from 0 up to -10 dB relative to H2; factory profiles
+     * land around -15 dB (Tube) and -13.7 dB (British) at their default settings.
+     */
+    const float h3_detail_curve = sqrtf(sqrtf(detail));
+    out->h3_gain[1] =
+        out->h2_gain[1] * 0.31622777f * h3_detail_curve;
 
     const float diagnostic_drive = drive_enabled ? drive_control : 0.0f;
     const float harmonic_intensity = clampf_local(
@@ -2776,7 +2782,7 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
             0.001f);
         const uint32_t stored_spl = atomic_load_explicit(
             &s_dynamic_reference_spl_db, memory_order_acquire);
-        const float reference_phon = (stored_spl >= 35U && stored_spl <= 90U)
+        const float reference_phon = (stored_spl >= 35U && stored_spl <= 80U)
             ? (float)stored_spl : 60.0f;
         const float current_phon = clampf_local(
             reference_phon +
