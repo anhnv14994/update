@@ -728,7 +728,7 @@ input[type=range]::-moz-range-thumb{
       <div class="band">
         <div class="band-head"><span class="freq-role">1 kHz SPL CALIBRATION</span><span class="gain-val" id="dynamicCalibrationStatus">Chưa hiệu chuẩn</span></div>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px;">
-          <input type="number" id="dynamicReferenceSplDb" min="35" max="90" step="1" value="60" style="width:92px;max-width:35%;padding:9px;border-radius:8px;border:1px solid #555;background:#17191d;color:#fff;font-size:14px;">
+          <input type="number" id="dynamicReferenceSplDb" min="35" max="80" step="1" value="60" style="width:92px;max-width:35%;padding:9px;border-radius:8px;border:1px solid #555;background:#17191d;color:#fff;font-size:14px;">
           <span class="peq-subtitle">dB SPL tại vị trí nghe</span>
           <button type="button" id="dynamicCalibrateBtn" style="padding:9px 12px;border-radius:8px;border:1px solid #b88b3e;background:#2b251b;color:#f0c36d;font-weight:600;">Calibrate at current volume</button>
         </div>
@@ -1831,7 +1831,7 @@ document.getElementById("dynamicBassMaxDb").addEventListener("change", async e =
 
 document.getElementById("dynamicCalibrateBtn").addEventListener("click", async () => {
   const spl = Number(document.getElementById("dynamicReferenceSplDb").value);
-  if (!Number.isInteger(spl) || spl < 35 || spl > 90) {
+  if (!Number.isInteger(spl) || spl < 35 || spl > 80) {
     setStatus("SPL phải là số nguyên từ 35 đến 90 dB");
     return;
   }
