@@ -132,10 +132,12 @@ static void end_audio_config_transition(void)
 static void apply_legacy_character(void)
 {
     dsp_character_t factory = { .mode = DSP_CHARACTER_CUSTOM };
-    const dsp_character_t *source =
-        s_legacy_character_valid ? &s_legacy_character : &factory;
+    dsp_character_t migrated = s_legacy_character_valid
+        ? s_legacy_character : factory;
+    /* air_pct was a legacy V4 field; only V6 reuses it for HF H2. */
+    migrated.air_pct = 0.0f;
 
-    if (dsp_engine_set_character(source) != ESP_OK)
+    if (dsp_engine_set_character(&migrated) != ESP_OK)
         ESP_LOGW(TAG, "Could not apply legacy/factory Character fallback");
 }
 
@@ -252,7 +254,9 @@ static esp_err_t apply_v2_preset_options(
         return ESP_OK;
     }
 
-    esp_err_t err = dsp_engine_set_character(&old->character);
+    dsp_character_t migrated_character = old->character;
+    migrated_character.air_pct = 0.0f; /* Reserved legacy Air control; V6 HF Air starts OFF. */
+    esp_err_t err = dsp_engine_set_character(&migrated_character);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Preset %d V2 Character invalid; using defaults", (int)id);
         apply_default_preset_options();
@@ -328,7 +332,9 @@ static esp_err_t apply_v3_preset_options(
         return ESP_OK;
     }
 
-    esp_err_t err = dsp_engine_set_character(&old->character);
+    dsp_character_t migrated_character = old->character;
+    migrated_character.air_pct = 0.0f; /* Prevent old V4 Air setting becoming HF H2. */
+    esp_err_t err = dsp_engine_set_character(&migrated_character);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Preset %d V3 Character invalid; using defaults", (int)id);
         apply_default_preset_options();
@@ -416,7 +422,9 @@ static esp_err_t apply_v5_preset_options(
         return ESP_OK;
     }
 
-    esp_err_t err = dsp_engine_set_character(&old->character);
+    dsp_character_t migrated_character = old->character;
+    migrated_character.air_pct = 0.0f; /* V5 did not have the V6 HF Air control. */
+    esp_err_t err = dsp_engine_set_character(&migrated_character);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Preset %d V5 Character invalid; using defaults", (int)id);
         apply_default_preset_options();
