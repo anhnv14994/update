@@ -708,6 +708,13 @@ input[type=range]::-moz-range-thumb{
       </div>
       <div class="peq-subtitle">A/B độc lập. Tăng strength làm hiệu ứng transient rõ hơn, không phải treble shelf liên tục. Bắt đầu thấp; HF B có spectral guard nhẹ. Mix ramp 8 ms.</div>
 
+      <div class="character-diag-title">HF harmonic refinement · lưu theo preset</div>
+      <div class="band">
+        <div class="band-head"><span class="freq-role">HF AIR · H2</span><span class="gain-val" id="characterAirVal">0%</span></div>
+        <input type="range" min="0" max="100" step="1" value="0" id="characterAir">
+        <div class="peq-subtitle">0–100% · Tạo H2 rất nhẹ từ nguồn 2–5 kHz, chủ yếu bổ sung vùng 4–10 kHz. Không phải high-shelf, không boost treble trực tiếp. Bắt đầu 10–20%; chỉ tăng nếu cymbal/vocal vẫn tự nhiên.</div>
+      </div>
+
       <div class="character-diag-title">Volume-adaptive tone · lưu theo preset</div>
       <div class="feature">
         <div class="feature-text"><div class="feature-name">Adaptive bass + treble</div><div class="feature-info">Bass chỉ được cộng thêm khi nghe nhỏ; mở lớn sẽ trở về mức gốc, không tự cắt bass. Treble quanh 11 kHz tăng khi nghe nhỏ và dịu xuống khi mở lớn.</div></div>
@@ -718,7 +725,16 @@ input[type=range]::-moz-range-thumb{
         <input type="range" min="0" max="5" step="1" value="4" id="dynamicBassMaxDb">
         <div class="peq-subtitle">0–5 dB · 1 dB mỗi nấc. Đây là mức bù tối đa ở volume nhỏ; thuật toán tự giảm dần về 0 dB khi tăng âm lượng. Chọn 0 để tắt riêng phần bù bass.</div>
       </div>
-      <div class="peq-subtitle">Mốc tham chiếu khoảng −6 dB theo AirPlay volume × master preset (không phải SPL đã hiệu chuẩn). Khi bật: bass tối đa theo thanh kéo, chỉ boost và không bị cắt khi mở lớn; treble dùng vùng chuyển tiếp 11 kHz, tối đa khoảng +1.5 dB lúc nhỏ và −2 dB lúc lớn. Khi tắt: cả hai đường bù trở về 0 dB. Trạng thái và mức bass được lưu theo từng preset.</div>
+      <div class="band">
+        <div class="band-head"><span class="freq-role">1 kHz SPL CALIBRATION</span><span class="gain-val" id="dynamicCalibrationStatus">Chưa hiệu chuẩn</span></div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px;">
+          <input type="number" id="dynamicReferenceSplDb" min="35" max="90" step="1" value="60" style="width:92px;max-width:35%;padding:9px;border-radius:8px;border:1px solid #555;background:#17191d;color:#fff;font-size:14px;">
+          <span class="peq-subtitle">dB SPL tại vị trí nghe</span>
+          <button type="button" id="dynamicCalibrateBtn" style="padding:9px 12px;border-radius:8px;border:1px solid #b88b3e;background:#2b251b;color:#f0c36d;font-weight:600;">Calibrate at current volume</button>
+        </div>
+        <div class="peq-subtitle">Phát tone sine 1 kHz liên tục, đo bằng SPL meter tại vị trí ngồi (Slow; dB SPL), nhập kết quả và bấm Calibrate. Firmware lưu cả mức SPL và gain hiện tại theo preset. Nếu chưa đo, hệ thống dùng mốc ước lượng 60 phon.</div>
+      </div>
+      <div class="peq-subtitle">Khi bật, DSP ước lượng mức nghe từ AirPlay volume × master preset so với điểm SPL đã hiệu chuẩn. Đường bù bass quanh 110 Hz chỉ tăng, tối đa theo thanh kéo; treble quanh 11 kHz tăng khi nghe nhỏ và dịu xuống khi nghe lớn. Mô hình dựa trên contour ISO 226:2023 cho tone thuần, được giới hạn cho nhạc thực tế; không thay thế đo đáp tuyến loa/phòng. ON/OFF, bass limit và điểm hiệu chuẩn được lưu riêng theo từng preset.</div>
 
       <div class="character-diag-title">Processing time · µs per 352-sample frame</div>
       <div class="peq-subtitle">Cycle-counter elapsed time; may include scheduler preemption, so compare relative stage cost.</div>
@@ -1614,7 +1630,8 @@ document
 const characterControls = [
   ["characterWarmth", "warmth_pct", "characterWarmthVal"],
   ["characterDetail", "detail_pct", "characterDetailVal"],
-  ["characterDrive", "drive_pct", "characterDriveVal"]];
+  ["characterDrive", "drive_pct", "characterDriveVal"],
+  ["characterAir", "hf_air_pct", "characterAirVal"]];
 
 const characterModifierControls = [
   ["characterInteraction", "harmonic_interaction_pct", "characterInteractionVal"],
@@ -1646,6 +1663,11 @@ function renderCharacter(){
   const bassMaxDb = Math.max(0, Math.min(5, Number((state && state.dynamic_bass_max_db) ?? 4)));
   document.getElementById("dynamicBassMaxDb").value = bassMaxDb;
   document.getElementById("dynamicBassMaxDbVal").textContent = String(bassMaxDb) + " dB";
+  const isCalibrated = !!(state && state.dynamic_calibrated);
+  const referenceSpl = Number((state && state.dynamic_reference_spl_db) || 0);
+  document.getElementById("dynamicReferenceSplDb").value = isCalibrated ? referenceSpl : 60;
+  document.getElementById("dynamicCalibrationStatus").textContent =
+    isCalibrated ? (String(referenceSpl) + " dB SPL · calibrated") : "Ước lượng 60 phon";
   const hfAStrength = Math.max(0, Math.min(100, Number(c.hf_a_strength_pct ?? 0)));
   const hfBStrength = Math.max(0, Math.min(100, Number(c.hf_b_strength_pct ?? 0)));
   document.getElementById("characterHfAStrength").value = hfAStrength;
@@ -1803,6 +1825,26 @@ document.getElementById("dynamicBassMaxDb").addEventListener("change", async e =
   } catch (err) {
     console.error(err);
     setStatus("Không thể cập nhật mức bù bass");
+    await refresh();
+  }
+});
+
+document.getElementById("dynamicCalibrateBtn").addEventListener("click", async () => {
+  const spl = Number(document.getElementById("dynamicReferenceSplDb").value);
+  if (!Number.isInteger(spl) || spl < 35 || spl > 90) {
+    setStatus("SPL phải là số nguyên từ 35 đến 90 dB");
+    return;
+  }
+  try {
+    state = await api("/api/dsp/loudness", {
+      calibrate: true,
+      reference_spl_db: spl
+    });
+    renderCharacter();
+    setStatus("Đã hiệu chuẩn Dynamic Loudness tại " + spl + " dB SPL");
+  } catch (err) {
+    console.error(err);
+    setStatus("Không thể hiệu chuẩn: kiểm tra AirPlay volume và preset");
     await refresh();
   }
 });
