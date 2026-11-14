@@ -274,6 +274,7 @@ static _Atomic uint32_t s_character_hf_b_strength_pct = 0;
 /* AirPlay volume is kept out of the PCM16 path until final output quantization. */
 static _Atomic uint32_t s_output_volume_q = 50000U; /* preserve RAOP's 0.05 startup level */
 static _Atomic bool s_dynamic_loudness_enabled = false;
+static _Atomic uint32_t s_dynamic_bass_max_db = 4U; /* 0..5 dB, saved per preset */
 
 typedef struct {
     float low_lp[2];
@@ -990,7 +991,7 @@ static void rebuild_character_filters(void)
     next.loudness_low_alpha = 1.0f - expf(
         -2.0f * (float)M_PI * 110.0f / DSP_SAMPLE_RATE_HZ);
     next.loudness_high_alpha = 1.0f - expf(
-        -2.0f * (float)M_PI * 9000.0f / DSP_SAMPLE_RATE_HZ);
+        -2.0f * (float)M_PI * 11000.0f / DSP_SAMPLE_RATE_HZ);
 
     if (s_lock)
         xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -1821,6 +1822,21 @@ bool dsp_engine_get_dynamic_loudness(void)
 {
     return atomic_load_explicit(
         &s_dynamic_loudness_enabled, memory_order_acquire);
+}
+
+esp_err_t dsp_engine_set_dynamic_bass_max_db(uint8_t max_db)
+{
+    if (max_db > 5U)
+        return ESP_ERR_INVALID_ARG;
+
+    atomic_store_explicit(&s_dynamic_bass_max_db, max_db, memory_order_release);
+    return ESP_OK;
+}
+
+uint8_t dsp_engine_get_dynamic_bass_max_db(void)
+{
+    return (uint8_t)atomic_load_explicit(
+        &s_dynamic_bass_max_db, memory_order_acquire);
 }
 
 
@@ -2671,8 +2687,8 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
             &s_output_volume_q, memory_order_acquire) * 0.000001f
         : 1.0f;
 
-    /* Relative output-level estimate: AirPlay gain x active preset master.
-     * This is not SPL calibration; the feature remains OFF by default. */
+    /* Relative level estimate: AirPlay volume x preset master x EQ headroom.
+     * This is not SPL calibration. Bass is boost-only; treble is two-sided. */
     float target_loudness_bass = 1.0f;
     float target_loudness_treble = 1.0f;
     if (dynamic_loudness_requested && target_output_volume > 0.0001f) {
@@ -2682,14 +2698,20 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
         const float treble_effective_gain = fmaxf(
             target_output_volume * master_linear *
             db_to_linear(high_peak_eq_gain_db), 0.001f);
+        const float bass_level_db = 20.0f * log10f(bass_effective_gain);
+        const float treble_level_db = 20.0f * log10f(treble_effective_gain);
         const float bass_below_reference_db =
-            fmaxf(-6.0f - 20.0f * log10f(bass_effective_gain), 0.0f);
-        const float treble_below_reference_db =
-            fmaxf(-6.0f - 20.0f * log10f(treble_effective_gain), 0.0f);
-        target_loudness_bass =
-            db_to_linear(fminf(0.22f * bass_below_reference_db, 3.0f));
-        target_loudness_treble =
-            db_to_linear(fminf(0.07f * treble_below_reference_db, 1.0f));
+            fmaxf(-6.0f - bass_level_db, 0.0f);
+        const float bass_max_db = (float)atomic_load_explicit(
+            &s_dynamic_bass_max_db, memory_order_acquire);
+        const float bass_compensation_db =
+            fminf(0.30f * bass_below_reference_db, bass_max_db);
+        /* Around -6 dB reference: +1.5 dB at quiet levels, up to -2 dB loud. */
+        const float treble_compensation_db = clampf_local(
+            -0.25f * (treble_level_db + 6.0f), -2.0f, 1.5f);
+
+        target_loudness_bass = db_to_linear(bass_compensation_db);
+        target_loudness_treble = db_to_linear(treble_compensation_db);
     }
 
 
