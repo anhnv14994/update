@@ -3469,7 +3469,7 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
                             (hf->slow_env_a[ch] - 0.0015f) * 125.0f,
                             0.0f, 1.0f);
                         /* A tiny H2 residual from 2–5 kHz lands mainly in 4–10 kHz. */
-                        y += h2_residual * current_air_harmonic * 0.08f * air_gate;
+                        y += h2_residual * current_air_harmonic * 0.18f * air_gate;
                     } else {
                         memset(&hf->air_hpf[ch], 0, sizeof(hf->air_hpf[ch]));
                         hf->air_mean_square[ch] = 0.0f;
