@@ -208,7 +208,7 @@ typedef struct {
     /* HF source bands for transient A/B and the separate gated H2 Air path. */
     biquad_coef_t hf_band_a; /* 2–5 kHz, centered at 3.16 kHz */
     biquad_coef_t hf_band_b; /* 5–10 kHz, centered at 7.07 kHz */
-    biquad_coef_t hf_air_hpf; /* Keep generated 2nd harmonic in the 4–10 kHz band. */
+    biquad_coef_t hf_air_band; /* H2 output window centered at 5 kHz, approximately 4–6 kHz. */
     float hf_air_alpha;
     float sag_attack_alpha;
     float sag_release_alpha;
@@ -264,7 +264,7 @@ static biquad_state_t s_character_residual_hpf[2];
 typedef struct {
     biquad_state_t band_a[2];
     biquad_state_t band_b[2];
-    biquad_state_t air_hpf[2];
+    biquad_state_t air_band[2];
     float air_mean_square[2];
     float fast_env_a[2];
     float slow_env_a[2];
@@ -1028,8 +1028,8 @@ static void rebuild_character_filters(void)
     /* HF refinement: transient A/B plus a separate gated H2 Air path; no static treble shelf. */
     calc_bandpass(DSP_SAMPLE_RATE_HZ, 3162.2777f, 1.054f, &next.hf_band_a);
     calc_bandpass(DSP_SAMPLE_RATE_HZ, 7071.0678f, 1.414f, &next.hf_band_b);
-    calc_butterworth_hpf_q(DSP_SAMPLE_RATE_HZ, 3500.0f,
-                           0.70710678118f, &next.hf_air_hpf);
+    calc_bandpass(DSP_SAMPLE_RATE_HZ, 5000.0f, 2.5f,
+                  &next.hf_air_band);
     next.hf_air_alpha = envelope_alpha(20.0f);
     next.sag_attack_alpha = envelope_alpha(5.0f);
     next.sag_release_alpha = envelope_alpha(150.0f);
@@ -3470,14 +3470,14 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
                             (band_a_power - hf->air_mean_square[ch]);
                         const float h2_residual = biquad_process_sample(
                             band_a_power - hf->air_mean_square[ch],
-                            &character_filters.hf_air_hpf, &hf->air_hpf[ch]);
+                            &character_filters.hf_air_band, &hf->air_band[ch]);
                         const float air_gate = clampf_local(
                             (hf->slow_env_a[ch] - 0.0015f) * 125.0f,
                             0.0f, 1.0f);
                         /* A tiny H2 residual from 2–5 kHz lands mainly in 4–10 kHz. */
                         y += h2_residual * current_air_harmonic * 0.18f * air_gate;
                     } else {
-                        memset(&hf->air_hpf[ch], 0, sizeof(hf->air_hpf[ch]));
+                        memset(&hf->air_band[ch], 0, sizeof(hf->air_band[ch]));
                         hf->air_mean_square[ch] = 0.0f;
                     }
 
