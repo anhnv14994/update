@@ -3474,7 +3474,7 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
                         const float air_gate = clampf_local(
                             (hf->slow_env_a[ch] - 0.0015f) * 125.0f,
                             0.0f, 1.0f);
-                        /* A tiny H2 residual from 2–5 kHz lands mainly in 4–10 kHz. */
+                        /* A tiny H2 residual from 2–5 kHz is band-limited to the 4–6 kHz region. */
                         y += h2_residual * current_air_harmonic * 0.18f * air_gate;
                     } else {
                         memset(&hf->air_band[ch], 0, sizeof(hf->air_band[ch]));
