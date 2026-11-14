@@ -1832,7 +1832,7 @@ document.getElementById("dynamicBassMaxDb").addEventListener("change", async e =
 document.getElementById("dynamicCalibrateBtn").addEventListener("click", async () => {
   const spl = Number(document.getElementById("dynamicReferenceSplDb").value);
   if (!Number.isInteger(spl) || spl < 35 || spl > 80) {
-    setStatus("SPL phải là số nguyên từ 35 đến 90 dB");
+    setStatus("SPL phải là số nguyên từ 35 đến 80 dB");
     return;
   }
   try {
