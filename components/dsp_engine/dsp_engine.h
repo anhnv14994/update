@@ -158,6 +158,10 @@ esp_err_t dsp_engine_set_dynamic_loudness(bool enabled);
 bool      dsp_engine_get_dynamic_loudness(void);
 esp_err_t dsp_engine_set_dynamic_bass_max_db(uint8_t max_db);
 uint8_t   dsp_engine_get_dynamic_bass_max_db(void);
+esp_err_t dsp_engine_set_dynamic_loudness_calibration(
+    uint8_t reference_spl_db, float reference_gain);
+void dsp_engine_get_dynamic_loudness_calibration(
+    uint8_t *reference_spl_db, float *reference_gain);
 
 /* ============================================================
  * Active preset
