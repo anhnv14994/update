@@ -1436,6 +1436,23 @@ static esp_err_t api_loudness_handler(httpd_req_t *req)
         has_reference_spl ? (uint8_t)reference_spl->valueint : 0U;
     cJSON_Delete(body);
 
+    /*
+     * SPL calibration must measure the intended PEQ/master path, not a bypass
+     * or a tone altered by Character/Dynamic Loudness.
+     */
+    if (calibrate_now) {
+        dsp_character_t calibration_character;
+        const bool character_read_ok =
+            dsp_engine_get_character(&calibration_character) == ESP_OK;
+        const bool loudness_will_be_off =
+            has_enabled ? !enabled_value : !dsp_engine_get_dynamic_loudness();
+        if (!dsp_engine_get_enabled() || !loudness_will_be_off ||
+            !character_read_ok || calibration_character.enabled) {
+            return send_error_json(req, 400,
+                "calibration requires DSP ON, Character OFF and Dynamic Loudness OFF");
+        }
+    }
+
     begin_audio_config_transition();
     esp_err_t err = ESP_OK;
     if (has_enabled)
@@ -1463,7 +1480,7 @@ static esp_err_t api_loudness_handler(httpd_req_t *req)
 
     if (err != ESP_OK)
         return send_error_json(req, 400,
-            "cannot update loudness settings; calibration requires nonzero AirPlay volume");
+            "cannot update loudness settings; check calibration state and AirPlay volume");
 
     return send_state(req);
 }
