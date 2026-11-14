@@ -15,7 +15,7 @@ void stereo_spatial_get_config(const stereo_spatial_ctx_t *ctx, stereo_spatial_c
 static const char *TAG = "dsp_api";
 
 #define DSP_OPTIONS_MAGIC   0x4453504FU /* "DSPO" */
-#define DSP_OPTIONS_VERSION 4U
+#define DSP_OPTIONS_VERSION 5U
 #define DSP_OPTIONS_NS      "dsp_opts"
 
 /* Exact V1 layout kept for in-place migration of existing NVS records. */
@@ -82,7 +82,11 @@ typedef struct {
     uint8_t character_stage_mask;
     uint8_t character_feature_mask;
     dsp_character_t character;
+    uint8_t dynamic_bass_max_db; /* 0..5 dB, appended to preserve V4 layout */
 } dsp_preset_options_blob_t;
+
+_Static_assert(sizeof(dsp_preset_options_blob_t) != sizeof(dsp_preset_options_v3_blob_t),
+               "V5 preset options must have a distinct size from V3/V4");
 
 /* V1 used one shared Character record. Retain it as a one-time migration base. */
 static dsp_character_t s_legacy_character;
@@ -115,6 +119,7 @@ static void apply_default_preset_options(void)
     apply_legacy_character();
     (void)dsp_engine_set_character_hf(false, false, 0U, 0U);
     (void)dsp_engine_set_dynamic_loudness(false);
+    (void)dsp_engine_set_dynamic_bass_max_db(4U);
     (void)dsp_engine_set_character_diagnostics(
         DSP_CHARACTER_STAGE_MASK_ALL, DSP_CHARACTER_FEATURE_MASK_ALL);
 
@@ -163,6 +168,10 @@ static esp_err_t apply_legacy_preset_options(
 
     err = dsp_engine_set_dynamic_loudness(
         old->dynamic_loudness_enabled != 0U);
+    if (err != ESP_OK)
+        return err;
+
+    err = dsp_engine_set_dynamic_bass_max_db(4U);
     if (err != ESP_OK)
         return err;
 
@@ -231,6 +240,10 @@ static esp_err_t apply_v2_preset_options(
     if (err != ESP_OK)
         return err;
 
+    err = dsp_engine_set_dynamic_bass_max_db(4U);
+    if (err != ESP_OK)
+        return err;
+
     /* Firmware upgrade clears any diagnostic bypass left by old A/B tests. */
     err = dsp_engine_set_character_diagnostics(
         DSP_CHARACTER_STAGE_MASK_ALL, DSP_CHARACTER_FEATURE_MASK_ALL);
@@ -258,7 +271,7 @@ static bool preset_options_v3_valid(const dsp_preset_options_v3_blob_t *blob)
 {
     return blob &&
         blob->magic == DSP_OPTIONS_MAGIC &&
-        blob->version == 3U &&
+        (blob->version == 3U || blob->version == 4U) &&
         blob->dsp_enabled <= 1U &&
         blob->hf_a_enabled <= 1U &&
         blob->hf_b_enabled <= 1U &&
@@ -267,7 +280,10 @@ static bool preset_options_v3_valid(const dsp_preset_options_v3_blob_t *blob)
         blob->dynamic_loudness_enabled <= 1U &&
         blob->spatial_mode <= STEREO_SPATIAL_MODE_WIDE &&
         blob->enable_width_eq <= 1U &&
-        blob->enable_decorrelator <= 1U;
+        blob->enable_decorrelator <= 1U &&
+        (blob->version == 3U ||
+         (((blob->character_stage_mask & (uint8_t)~DSP_CHARACTER_STAGE_MASK_ALL) == 0U) &&
+          ((blob->character_feature_mask & (uint8_t)~DSP_CHARACTER_FEATURE_MASK_ALL) == 0U)));
 }
 
 static esp_err_t apply_v3_preset_options(
@@ -298,9 +314,16 @@ static esp_err_t apply_v3_preset_options(
     if (err != ESP_OK)
         return err;
 
-    /* Reset diagnostic A/B masks on V3 -> V4 firmware migration. */
-    err = dsp_engine_set_character_diagnostics(
-        DSP_CHARACTER_STAGE_MASK_ALL, DSP_CHARACTER_FEATURE_MASK_ALL);
+    err = dsp_engine_set_dynamic_bass_max_db(4U);
+    if (err != ESP_OK)
+        return err;
+
+    /* V3 had no active A/B mask; V4 already persisted both masks. */
+    const uint8_t stage_mask = (old->version == 3U)
+        ? DSP_CHARACTER_STAGE_MASK_ALL : old->character_stage_mask;
+    const uint8_t feature_mask = (old->version == 3U)
+        ? DSP_CHARACTER_FEATURE_MASK_ALL : old->character_feature_mask;
+    err = dsp_engine_set_character_diagnostics(stage_mask, feature_mask);
     if (err != ESP_OK)
         return err;
 
@@ -319,9 +342,8 @@ static esp_err_t apply_v3_preset_options(
             return err;
     }
 
-    ESP_LOGW(TAG,
-             "Preset %d V3 -> V4 migration: diagnostic A/B masks reset to ALL",
-             (int)id);
+    ESP_LOGW(TAG, "Preset %d V%u -> V5 options migration",
+             (int)id, old->version);
     err = save_preset_options(id);
     if (err != ESP_OK)
         ESP_LOGW(TAG, "Preset %d V4 migration save failed: %s",
@@ -383,40 +405,54 @@ static esp_err_t apply_preset_options(dsp_preset_id_t id)
         return apply_v2_preset_options(id, &old);
     }
 
-    if (len != sizeof(dsp_preset_options_v3_blob_t)) {
+    if (len == sizeof(dsp_preset_options_v3_blob_t)) {
+        /* V3 and V4 share the same frozen binary layout. */
+        dsp_preset_options_v3_blob_t old;
+        size_t read_len = sizeof(old);
+        err = nvs_get_blob(nvs, key, &old, &read_len);
+        nvs_close(nvs);
+        if (err != ESP_OK || read_len != sizeof(old)) {
+            apply_default_preset_options();
+            return ESP_OK;
+        }
+        if (old.magic == DSP_OPTIONS_MAGIC &&
+            (old.version == 3U || old.version == 4U))
+            return apply_v3_preset_options(id, &old);
+
+        ESP_LOGW(TAG, "Preset %d legacy options version unsupported; using defaults",
+                 (int)id);
+        apply_default_preset_options();
+        return ESP_OK;
+    }
+
+    if (len != sizeof(dsp_preset_options_blob_t)) {
         nvs_close(nvs);
         ESP_LOGW(TAG, "Preset %d options size unsupported; using defaults", (int)id);
         apply_default_preset_options();
         return ESP_OK;
     }
 
-    /* V3 and V4 deliberately share a frozen layout; inspect version after read. */
-    dsp_preset_options_v3_blob_t raw;
-    size_t read_len = sizeof(raw);
-    err = nvs_get_blob(nvs, key, &raw, &read_len);
+    dsp_preset_options_blob_t blob;
+    size_t read_len = sizeof(blob);
+    err = nvs_get_blob(nvs, key, &blob, &read_len);
     nvs_close(nvs);
-    if (err != ESP_OK || read_len != sizeof(raw)) {
+    if (err != ESP_OK || read_len != sizeof(blob)) {
         apply_default_preset_options();
         return ESP_OK;
     }
 
-    if (raw.magic == DSP_OPTIONS_MAGIC && raw.version == 3U)
-        return apply_v3_preset_options(id, &raw);
-
-    if (raw.magic != DSP_OPTIONS_MAGIC || raw.version != DSP_OPTIONS_VERSION) {
+    if (blob.magic != DSP_OPTIONS_MAGIC || blob.version != DSP_OPTIONS_VERSION) {
         ESP_LOGW(TAG, "Preset %d options version unsupported; preserved, defaults applied",
                  (int)id);
         apply_default_preset_options();
         return ESP_OK;
     }
 
-    dsp_preset_options_blob_t blob;
-    memcpy(&blob, &raw, sizeof(blob));
-
     if (blob.dsp_enabled > 1U ||
         blob.hf_a_enabled > 1U || blob.hf_b_enabled > 1U ||
         blob.hf_a_strength_pct > 100U || blob.hf_b_strength_pct > 100U ||
         blob.dynamic_loudness_enabled > 1U ||
+        blob.dynamic_bass_max_db > 5U ||
         blob.spatial_mode > STEREO_SPATIAL_MODE_WIDE ||
         blob.enable_width_eq > 1U || blob.enable_decorrelator > 1U ||
         (blob.character_stage_mask & (uint8_t)~DSP_CHARACTER_STAGE_MASK_ALL) != 0U ||
@@ -448,6 +484,10 @@ static esp_err_t apply_preset_options(dsp_preset_id_t id)
 
     err = dsp_engine_set_dynamic_loudness(
         blob.dynamic_loudness_enabled != 0U);
+    if (err != ESP_OK)
+        return err;
+
+    err = dsp_engine_set_dynamic_bass_max_db(blob.dynamic_bass_max_db);
     if (err != ESP_OK)
         return err;
 
@@ -508,6 +548,7 @@ static esp_err_t save_preset_options(dsp_preset_id_t id)
     blob.hf_b_strength_pct = hf_b_strength;
     blob.dynamic_loudness_enabled =
         dsp_engine_get_dynamic_loudness() ? 1U : 0U;
+    blob.dynamic_bass_max_db = dsp_engine_get_dynamic_bass_max_db();
 
     err = dsp_engine_get_character_diagnostic_masks(
         &blob.character_stage_mask, &blob.character_feature_mask);
@@ -556,6 +597,7 @@ static esp_err_t reset_preset_options(dsp_preset_id_t id)
     blob.version = DSP_OPTIONS_VERSION;
     blob.dsp_enabled = 1U;
     blob.character.mode = DSP_CHARACTER_CUSTOM;
+    blob.dynamic_bass_max_db = 4U;
     blob.character_stage_mask = DSP_CHARACTER_STAGE_MASK_ALL;
     blob.character_feature_mask = DSP_CHARACTER_FEATURE_MASK_ALL;
 
@@ -756,6 +798,8 @@ static cJSON *build_state_json(void)
                             dsp_engine_get_output_volume());
     cJSON_AddBoolToObject(root, "dynamic_loudness_enabled",
                           dsp_engine_get_dynamic_loudness());
+    cJSON_AddNumberToObject(root, "dynamic_bass_max_db",
+                            dsp_engine_get_dynamic_bass_max_db());
 
 
     // ---------------------------------------------------------
@@ -1200,18 +1244,39 @@ static esp_err_t api_loudness_handler(httpd_req_t *req)
         return send_error_json(req, 400, "invalid or empty json");
 
     cJSON *enabled = cJSON_GetObjectItem(body, "enabled");
-    if (!cJSON_IsBool(enabled)) {
+    cJSON *bass_max = cJSON_GetObjectItem(body, "bass_max_db");
+    if ((!enabled || !cJSON_IsBool(enabled)) &&
+        (!bass_max || !cJSON_IsNumber(bass_max))) {
         cJSON_Delete(body);
-        return send_error_json(req, 400, "expected boolean 'enabled'");
+        return send_error_json(req, 400, "expected 'enabled' and/or numeric 'bass_max_db'");
+    }
+    if (enabled && !cJSON_IsBool(enabled)) {
+        cJSON_Delete(body);
+        return send_error_json(req, 400, "'enabled' must be boolean");
+    }
+    if (bass_max && (!cJSON_IsNumber(bass_max) ||
+        bass_max->valuedouble < 0.0 || bass_max->valuedouble > 5.0 ||
+        (double)bass_max->valueint != bass_max->valuedouble)) {
+        cJSON_Delete(body);
+        return send_error_json(req, 400, "'bass_max_db' must be an integer from 0 to 5");
     }
 
-    const bool value = cJSON_IsTrue(enabled);
+    const bool has_enabled = enabled != NULL;
+    const bool enabled_value = has_enabled && cJSON_IsTrue(enabled);
+    const bool has_bass_max = bass_max != NULL;
+    const uint8_t bass_max_value = has_bass_max ? (uint8_t)bass_max->valueint : 0U;
     cJSON_Delete(body);
+
     begin_audio_config_transition();
-    esp_err_t err = dsp_engine_set_dynamic_loudness(value);
+    esp_err_t err = ESP_OK;
+    if (has_enabled)
+        err = dsp_engine_set_dynamic_loudness(enabled_value);
+    if (err == ESP_OK && has_bass_max)
+        err = dsp_engine_set_dynamic_bass_max_db(bass_max_value);
     end_audio_config_transition();
+
     if (err != ESP_OK)
-        return send_error_json(req, 500, "cannot update Dynamic Loudness");
+        return send_error_json(req, 500, "cannot update Dynamic Loudness settings");
 
     return send_state(req);
 }
