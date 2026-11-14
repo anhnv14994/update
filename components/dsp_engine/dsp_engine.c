@@ -208,6 +208,10 @@ typedef struct {
     /* Dedicated band-pass paths for transient-only HF refinement. */
     biquad_coef_t hf_band_a; /* 2–5 kHz, centered at 3.16 kHz */
     biquad_coef_t hf_band_b; /* 5–10 kHz, centered at 7.07 kHz */
+    biquad_coef_t hf_air_hpf; /* Keep generated 2nd harmonic in the 4–10 kHz band. */
+    float hf_air_alpha;
+    float sag_attack_alpha;
+    float sag_release_alpha;
     float hf_fast_attack_alpha;
     float hf_fast_release_alpha;
     float hf_slow_attack_alpha;
@@ -237,6 +241,9 @@ typedef struct {
     float drive;
     float interaction;
     float dynamic_saturation;
+    float air_harmonic;
+    float sag_envelope;
+    float sag_gain;
     bool running;
 } character_state_t;
 
@@ -257,6 +264,8 @@ static biquad_state_t s_character_residual_hpf[2];
 typedef struct {
     biquad_state_t band_a[2];
     biquad_state_t band_b[2];
+    biquad_state_t air_hpf[2];
+    float air_mean_square[2];
     float fast_env_a[2];
     float slow_env_a[2];
     float fast_env_b[2];
@@ -275,6 +284,8 @@ static _Atomic uint32_t s_character_hf_b_strength_pct = 0;
 static _Atomic uint32_t s_output_volume_q = 50000U; /* preserve RAOP's 0.05 startup level */
 static _Atomic bool s_dynamic_loudness_enabled = false;
 static _Atomic uint32_t s_dynamic_bass_max_db = 4U; /* 0..5 dB, saved per preset */
+static _Atomic uint32_t s_dynamic_reference_spl_db = 0U; /* 0 = estimated, not SPL calibrated */
+static _Atomic uint32_t s_dynamic_reference_gain_q = 500000U; /* 0.5x effective gain */
 
 typedef struct {
     float low_lp[2];
@@ -494,7 +505,8 @@ static inline void character_calculate_gain_coeffs(
     out->h2_gain[0] = 0.190f * warmth * drive * asymmetry_0;
     out->h2_gain[1] = 0.105f * warmth * drive * asymmetry_1;
     out->h3_gain[0] = 0.0f;
-    out->h3_gain[1] = 0.050f * detail * drive;
+    /* A modest +3.5 dB sensitivity increase makes Detail useful at normal settings. */
+    out->h3_gain[1] = 0.075f * detail * drive;
 
     const float diagnostic_drive = drive_enabled ? drive_control : 0.0f;
     const float harmonic_intensity = clampf_local(
@@ -509,6 +521,38 @@ static inline void character_calculate_gain_coeffs(
 static inline float db_to_linear(float db)
 {
     return powf(10.0f, db / 20.0f);
+}
+
+/*
+ * ISO 226:2023 equal-loudness contour, evaluated at the two adaptive bands.
+ * The 110 Hz and 11 kHz coefficients are log-frequency interpolations of
+ * the standard's 100/125 Hz and 10/12.5 kHz rows.
+ */
+static inline float iso226_spl_db(
+    float phon, float alpha_f, float lu_db, float threshold_db)
+{
+    phon = clampf_local(phon, 20.0f, 80.0f);
+    const float loudness_term =
+        powf(10.0f, 0.03f * phon) - 10.0f * 0.072f;
+    const float transfer_term =
+        powf(4.0e-10f, 0.3f - alpha_f) * loudness_term;
+    const float threshold_term =
+        powf(10.0f, alpha_f * (threshold_db + lu_db) * 0.1f);
+    const float total = fmaxf(transfer_term + threshold_term, 1.0e-20f);
+    return (10.0f / alpha_f) * log10f(total) - lu_db;
+}
+
+static inline float iso226_relative_compensation_db(
+    float current_phon, float reference_phon,
+    float alpha_f, float lu_db, float threshold_db)
+{
+    const float current_delta =
+        iso226_spl_db(current_phon, alpha_f, lu_db, threshold_db) -
+        clampf_local(current_phon, 20.0f, 80.0f);
+    const float reference_delta =
+        iso226_spl_db(reference_phon, alpha_f, lu_db, threshold_db) -
+        clampf_local(reference_phon, 20.0f, 80.0f);
+    return current_delta - reference_delta;
 }
 
 /* Smooth master trim per sample; about an 8 ms time constant at 44.1 kHz. */
@@ -978,6 +1022,11 @@ static void rebuild_character_filters(void)
     /* Transient-only refinement: no static treble shelf and no harmonic generator. */
     calc_bandpass(DSP_SAMPLE_RATE_HZ, 3162.2777f, 1.054f, &next.hf_band_a);
     calc_bandpass(DSP_SAMPLE_RATE_HZ, 7071.0678f, 1.414f, &next.hf_band_b);
+    calc_butterworth_hpf_q(DSP_SAMPLE_RATE_HZ, 3500.0f,
+                           0.70710678118f, &next.hf_air_hpf);
+    next.hf_air_alpha = envelope_alpha(20.0f);
+    next.sag_attack_alpha = envelope_alpha(5.0f);
+    next.sag_release_alpha = envelope_alpha(150.0f);
     next.hf_fast_attack_alpha = envelope_alpha(1.5f);
     next.hf_fast_release_alpha = envelope_alpha(25.0f);
     next.hf_slow_attack_alpha = envelope_alpha(30.0f);
@@ -1003,6 +1052,7 @@ static void rebuild_character_filters(void)
 static void reset_character_states(void)
 {
     memset(&s_character_state, 0, sizeof(s_character_state));
+    s_character_state.sag_gain = 1.0f;
     memset(s_character_residual_hpf, 0, sizeof(s_character_residual_hpf));
     memset(&s_character_hf_state, 0, sizeof(s_character_hf_state));
     s_character_active_stage_mask = 0;
@@ -1183,7 +1233,7 @@ static esp_err_t load_character_from_nvs(nvs_handle_t nvs)
             character_config_valid(&blob.character)) {
             s_character = blob.character;
             s_character.softness_pct = 0.0f;
-            s_character.air_pct = 0.0f;
+            /* air_pct is repurposed as the V6.9 optional HF H2 amount. */
             s_character.memory_pct = 0.0f;
             s_character.spectral_pct = 0.0f;
             return ESP_OK;
@@ -1839,6 +1889,38 @@ uint8_t dsp_engine_get_dynamic_bass_max_db(void)
         &s_dynamic_bass_max_db, memory_order_acquire);
 }
 
+esp_err_t dsp_engine_set_dynamic_loudness_calibration(
+    uint8_t reference_spl_db, float reference_gain)
+{
+    if ((reference_spl_db != 0U &&
+         (reference_spl_db < 35U || reference_spl_db > 90U)) ||
+        !isfinite(reference_gain) ||
+        reference_gain < 0.001f || reference_gain > 2.0f) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const uint32_t gain_q =
+        (uint32_t)(reference_gain * 1000000.0f + 0.5f);
+    atomic_store_explicit(
+        &s_dynamic_reference_gain_q, gain_q, memory_order_release);
+    atomic_store_explicit(
+        &s_dynamic_reference_spl_db, reference_spl_db, memory_order_release);
+    return ESP_OK;
+}
+
+void dsp_engine_get_dynamic_loudness_calibration(
+    uint8_t *reference_spl_db, float *reference_gain)
+{
+    if (reference_spl_db) {
+        *reference_spl_db = (uint8_t)atomic_load_explicit(
+            &s_dynamic_reference_spl_db, memory_order_acquire);
+    }
+    if (reference_gain) {
+        *reference_gain = (float)atomic_load_explicit(
+            &s_dynamic_reference_gain_q, memory_order_acquire) * 0.000001f;
+    }
+}
+
 
 /* ============================================================
  * Active preset
@@ -2384,7 +2466,7 @@ esp_err_t dsp_engine_set_character(const dsp_character_t *config)
     dsp_character_t next = *config;
     /* V5 ignores these legacy V4 controls; retain the NVS struct layout. */
     next.softness_pct = 0.0f;
-    next.air_pct = 0.0f;
+    /* air_pct is the backward-compatible storage slot for HF H2 amount. */
     next.memory_pct = 0.0f;
     next.spectral_pct = 0.0f;
 
@@ -2611,9 +2693,6 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
     bool character_enabled;
     uint8_t num_stages;
     float master_linear;
-    float low_peak_eq_gain_db;
-    float high_peak_eq_gain_db;
-
     biquad_coef_t coefs[DSP_NUM_STAGES];
     dsp_character_t character;
     character_filter_coef_t character_filters;
@@ -2663,8 +2742,6 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
     enabled = cached.enabled;
     num_stages = cached.num_stages;
     master_linear = cached.master_linear;
-    low_peak_eq_gain_db = cached.low_peak_eq_gain_db;
-    high_peak_eq_gain_db = cached.high_peak_eq_gain_db;
     memcpy(coefs, cached.coefs, sizeof(coefs));
     character = cached.character;
     character_enabled = cached.character_enabled;
@@ -2687,28 +2764,41 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
             &s_output_volume_q, memory_order_acquire) * 0.000001f
         : 1.0f;
 
-    /* Relative level estimate: AirPlay volume x preset master x EQ headroom.
-     * This is not SPL calibration. Bass is boost-only; treble is two-sided. */
+    /* Estimate current 1 kHz phon from the measured calibration point. */
     float target_loudness_bass = 1.0f;
     float target_loudness_treble = 1.0f;
     if (dynamic_loudness_requested && target_output_volume > 0.0001f) {
-        const float bass_effective_gain = fmaxf(
-            target_output_volume * master_linear *
-            db_to_linear(low_peak_eq_gain_db), 0.001f);
-        const float treble_effective_gain = fmaxf(
-            target_output_volume * master_linear *
-            db_to_linear(high_peak_eq_gain_db), 0.001f);
-        const float bass_level_db = 20.0f * log10f(bass_effective_gain);
-        const float treble_level_db = 20.0f * log10f(treble_effective_gain);
-        const float bass_below_reference_db =
-            fmaxf(-6.0f - bass_level_db, 0.0f);
+        const float current_effective_gain = fmaxf(
+            target_output_volume * master_linear, 0.001f);
+        const float reference_gain = fmaxf(
+            (float)atomic_load_explicit(
+                &s_dynamic_reference_gain_q, memory_order_acquire) * 0.000001f,
+            0.001f);
+        const uint32_t stored_spl = atomic_load_explicit(
+            &s_dynamic_reference_spl_db, memory_order_acquire);
+        const float reference_phon = (stored_spl >= 35U && stored_spl <= 90U)
+            ? (float)stored_spl : 60.0f;
+        const float current_phon = clampf_local(
+            reference_phon +
+                20.0f * log10f(current_effective_gain / reference_gain),
+            20.0f, 80.0f);
         const float bass_max_db = (float)atomic_load_explicit(
             &s_dynamic_bass_max_db, memory_order_acquire);
-        const float bass_compensation_db =
-            fminf(0.30f * bass_below_reference_db, bass_max_db);
-        /* Around -6 dB reference: +1.5 dB at quiet levels, up to -2 dB loud. */
+
+        /* ISO 226:2023 contour at 110 Hz (log interpolation around 100–125 Hz). */
+        const float bass_iso_delta_db = iso226_relative_compensation_db(
+            current_phon, reference_phon,
+            0.42403038f, -7.38846f, 24.62065f);
+        /* Bass is boost-only: it returns to the original response as volume rises. */
+        const float bass_compensation_db = clampf_local(
+            bass_iso_delta_db, 0.0f, bass_max_db);
+
+        /* ISO 226:2023 contour around 11 kHz (interpolated 10–12.5 kHz). */
         const float treble_compensation_db = clampf_local(
-            -0.25f * (treble_level_db + 6.0f), -2.0f, 1.5f);
+            iso226_relative_compensation_db(
+                current_phon, reference_phon,
+                0.3362370f, -7.73975f, 13.2166f),
+            -2.0f, 1.5f);
 
         target_loudness_bass = db_to_linear(bass_compensation_db);
         target_loudness_treble = db_to_linear(treble_compensation_db);
@@ -2971,12 +3061,16 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
     const float target_dynamic =
         (character_enabled && character.dynamic_saturation_enabled)
         ? character.dynamic_saturation_pct * 0.01f : 0.0f;
+    const float target_air_harmonic =
+        (character_enabled && diag_detail)
+        ? character.air_pct * 0.01f : 0.0f;
 
     const float warmth_start = cs->warmth;
     const float detail_start = cs->detail;
     const float drive_start = cs->drive;
     const float interaction_start = cs->interaction;
     const float dynamic_start = cs->dynamic_saturation;
+    const float air_start = cs->air_harmonic;
 
     const float warmth_end =
         warmth_start + block_alpha * (target_warmth - warmth_start);
@@ -2988,12 +3082,18 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
         interaction_start + block_alpha * (target_interaction - interaction_start);
     const float dynamic_end =
         dynamic_start + block_alpha * (target_dynamic - dynamic_start);
+    const float air_end =
+        air_start + block_alpha * (target_air_harmonic - air_start);
 
     cs->warmth = warmth_end;
     cs->detail = detail_end;
     cs->drive = drive_end;
     cs->interaction = interaction_end;
     cs->dynamic_saturation = dynamic_end;
+    cs->air_harmonic = air_end;
+
+    float current_air_harmonic = air_start;
+    const float air_harmonic_step = (air_end - air_start) * inv_frames;
 
     character_gain_coeffs_t gain_start;
     character_gain_coeffs_t gain_end;
@@ -3076,6 +3176,7 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
         current_h2_gain[0] += h2_gain_step[0];
         current_h2_gain[1] += h2_gain_step[1];
         current_h3_gain[1] += h3_gain_step[1];
+        current_air_harmonic += air_harmonic_step;
         current_im_guard += im_guard_step;
         if (dynamic_active)
             current_dynamic_scale += dynamic_scale_step;
@@ -3127,6 +3228,23 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
             if (character_mix_active) {
                 const float dry[2] = { yl, yr };
                 float residual_sum[2] = { 0.0f, 0.0f };
+
+                /* Very gentle 0.3 dB supply-sag analogue, applied to generated harmonics only. */
+                const float linked_input_peak = fmaxf(fabsf(dry[0]), fabsf(dry[1]));
+                const float sag_env_alpha =
+                    (linked_input_peak > cs->sag_envelope)
+                    ? character_filters.sag_attack_alpha
+                    : character_filters.sag_release_alpha;
+                cs->sag_envelope += sag_env_alpha *
+                    (linked_input_peak - cs->sag_envelope);
+                const float sag_depth_db = 0.30f * clampf_local(
+                    (cs->sag_envelope - 0.40f) * (1.0f / 0.55f), 0.0f, 1.0f);
+                const float sag_target_gain = db_to_linear(-sag_depth_db);
+                const float sag_gain_alpha =
+                    (sag_target_gain < cs->sag_gain)
+                    ? character_filters.sag_attack_alpha
+                    : character_filters.sag_release_alpha;
+                cs->sag_gain += sag_gain_alpha * (sag_target_gain - cs->sag_gain);
 
                 for (unsigned stage = 0; stage < CHARACTER_STAGE_COUNT; ++stage) {
                     if (!(active_stage_mask & (1U << stage)))
@@ -3253,8 +3371,8 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
                 }
 #endif
 
-                yl = dry[0] + residual_sum[0];
-                yr = dry[1] + residual_sum[1];
+                yl = dry[0] + residual_sum[0] * cs->sag_gain;
+                yr = dry[1] + residual_sum[1] * cs->sag_gain;
 
                 cs->running = (active_stage_mask != 0);
                 if (!cs->running) {
@@ -3286,7 +3404,8 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
                 target_a > 0.00001f || hf->mix_a > 0.00001f;
             const bool b_active =
                 target_b > 0.00001f || hf->mix_b > 0.00001f;
-            const bool hf_active = a_active || b_active;
+            const bool air_active = current_air_harmonic > 0.00001f;
+            const bool hf_active = a_active || b_active || air_active;
 
 #if CONFIG_DSP_CHARACTER_PROFILE
             const uint32_t hf_stage_start_cycles =
@@ -3331,6 +3450,23 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
                     float y = x;
                     if (a_active)
                         y += band_a * transient_a * hf->mix_a * 0.09648f;
+
+                    if (air_active) {
+                        const float band_a_power = band_a * band_a;
+                        hf->air_mean_square[ch] += character_filters.hf_air_alpha *
+                            (band_a_power - hf->air_mean_square[ch]);
+                        const float h2_residual = biquad_process_sample(
+                            band_a_power - hf->air_mean_square[ch],
+                            &character_filters.hf_air_hpf, &hf->air_hpf[ch]);
+                        const float air_gate = clampf_local(
+                            (hf->slow_env_a[ch] - 0.0015f) * 125.0f,
+                            0.0f, 1.0f);
+                        /* A tiny H2 residual from 2–5 kHz lands mainly in 4–10 kHz. */
+                        y += h2_residual * current_air_harmonic * 0.08f * air_gate;
+                    } else {
+                        memset(&hf->air_hpf[ch], 0, sizeof(hf->air_hpf[ch]));
+                        hf->air_mean_square[ch] = 0.0f;
+                    }
 
                     if (b_active) {
                         const float band_b = biquad_process_sample(
