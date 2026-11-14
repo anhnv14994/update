@@ -104,7 +104,7 @@ typedef struct {
     uint8_t character_feature_mask;
     dsp_character_t character;
     uint8_t dynamic_bass_max_db;
-    uint8_t dynamic_reference_spl_db; /* 0 = estimated fallback, otherwise 35..90 dB SPL */
+    uint8_t dynamic_reference_spl_db; /* 0 = estimated fallback, otherwise 35..80 dB SPL */
     uint32_t dynamic_reference_gain_q; /* effective AirPlay x preset-master gain, x1e6 */
 } dsp_preset_options_blob_t;
 
