@@ -732,7 +732,7 @@ input[type=range]::-moz-range-thumb{
           <span class="peq-subtitle">dB SPL tại vị trí nghe</span>
           <button type="button" id="dynamicCalibrateBtn" style="padding:9px 12px;border-radius:8px;border:1px solid #b88b3e;background:#2b251b;color:#f0c36d;font-weight:600;">Calibrate at current volume</button>
         </div>
-        <div class="peq-subtitle">Phát tone sine 1 kHz liên tục, đo bằng SPL meter tại vị trí ngồi (Slow; dB SPL), nhập kết quả và bấm Calibrate. Sau khi hiệu chuẩn, nhấn Save preset để ghi cả SPL và gain hiện tại vào preset. Hiệu chuẩn lại nếu đổi Master/PEQ; nếu chưa đo, hệ thống dùng mốc ước lượng 60 phon.</div>
+        <div class="peq-subtitle">Dùng REW Generator phát sine 1 kHz ở mức cố định −20 dBFS RMS; tắt Character và Dynamic Loudness trong lúc đo. Đặt SPL meter tại vị trí ngồi (Slow; dB SPL), nhập số đo rồi bấm Calibrate. Sau đó nhấn Save preset để lưu SPL + gain. Đo lại nếu đổi Master/PEQ. Đây là mốc tham chiếu để ước lượng mức nghe của nhạc, không phải SPL chính xác của mọi bản thu.</div>
       </div>
       <div class="peq-subtitle">Khi bật, DSP ước lượng mức nghe từ AirPlay volume × master preset so với điểm SPL đã hiệu chuẩn. Đường bù bass quanh 110 Hz chỉ tăng, tối đa theo thanh kéo; treble quanh 11 kHz tăng khi nghe nhỏ và dịu xuống khi nghe lớn. Mô hình dựa trên contour ISO 226:2023 cho tone thuần, được giới hạn cho nhạc thực tế; không thay thế đo đáp tuyến loa/phòng. ON/OFF, bass limit và điểm hiệu chuẩn được lưu riêng theo từng preset.</div>
 
