@@ -1645,7 +1645,7 @@ function renderCharacter(){
     !!(state && state.dynamic_loudness_enabled);
   const bassMaxDb = Math.max(0, Math.min(5, Number((state && state.dynamic_bass_max_db) ?? 4)));
   document.getElementById("dynamicBassMaxDb").value = bassMaxDb;
-  document.getElementById("dynamicBassMaxDbVal").textContent = \`\${bassMaxDb} dB\`;
+  document.getElementById("dynamicBassMaxDbVal").textContent = String(bassMaxDb) + " dB";
   const hfAStrength = Math.max(0, Math.min(100, Number(c.hf_a_strength_pct ?? 0)));
   const hfBStrength = Math.max(0, Math.min(100, Number(c.hf_b_strength_pct ?? 0)));
   document.getElementById("characterHfAStrength").value = hfAStrength;
@@ -1714,7 +1714,7 @@ async function updateCharacter(){
 characterControls.concat(characterModifierControls).forEach(([inputId, key, valueId]) => {
   const slider = document.getElementById(inputId);
   slider.addEventListener("input", e => {
-    document.getElementById(valueId).textContent = `${Math.round(Number(e.target.value))}%`;
+  document.getElementById("dynamicBassMaxDbVal").textContent = e.target.value + " dB";
     scheduleCharacterUpdate();
   });
   slider.addEventListener("change", () => {
