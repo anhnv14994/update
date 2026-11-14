@@ -94,7 +94,7 @@ input[type=number]{color:var(--text);background:var(--surface-2)!important;borde
 #spatialModes .preset-btn{justify-content:center;padding:10px 7px}
 #spatialModes .preset-name{font-size:10px;letter-spacing:.4px}
 @media(max-width:560px){body{padding:12px 10px 30px}.device{gap:10px}.titlebar{padding:19px 14px 16px;border-radius:21px}.section{padding:16px 15px;border-radius:19px}.footer{border-radius:18px;padding:14px 16px}#bands{grid-template-columns:1fr;gap:0}#bands .band{margin-bottom:7px}.character-diag{padding:12px}}
-@media(max-width:360px){body{padding:9px 7px 25px}.section{padding:14px 12px}.preset-btn{padding:10px}.preset-name{font-size:11px}.freq-role{display:none}.actions{gap:7px}.btn{padding:11px 7px;font-size:10px}}
+@media(max-width:360px){.freq-role.help-title{display:inline-flex}body{padding:9px 7px 25px}.section{padding:14px 12px}.preset-btn{padding:10px}.preset-name{font-size:11px}.freq-role{display:none}.actions{gap:7px}.btn{padding:11px 7px;font-size:10px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;transition-duration:.01ms!important}}
 </style>
 </head>
@@ -902,17 +902,16 @@ function renderBands(){
         <div class="freq-wrap">
 
           <input
-            class="freq-input tooltip"
+            class="freq-input"
             type="number"
             step="1"
             min="20"
             max="20000"
             value="${Math.round(freq)}"
             data-idx="${i}"
-            data-field="freq"
-            data-tip="${description}">
+            data-field="freq">
 
-          <span class="freq-role">
+          <span class="freq-role tooltip" data-tip="${description}">
             ${getBandRole(freq)}
           </span>
 
