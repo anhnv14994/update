@@ -291,7 +291,7 @@ static esp_err_t apply_v2_preset_options(
         stereo_spatial_set_config(g_stereo_ctx, &cfg);
     }
 
-    ESP_LOGI(TAG, "Preset %d V2 options upgraded to V3 complete snapshot", (int)id);
+    ESP_LOGI(TAG, "Preset %d V2 options migrated to V6 complete snapshot", (int)id);
     err = save_preset_options(id);
     if (err != ESP_OK)
         ESP_LOGW(TAG, "Preset %d V2 migration save failed: %s",
