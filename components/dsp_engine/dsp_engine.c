@@ -205,7 +205,7 @@ typedef struct {
     character_stage_filter_t stage[CHARACTER_STAGE_COUNT];
     /* The identical residual HPF is shared after summing both stage outputs. */
     biquad_coef_t residual_hpf;
-    /* Dedicated band-pass paths for transient-only HF refinement. */
+    /* HF source bands for transient A/B and the separate gated H2 Air path. */
     biquad_coef_t hf_band_a; /* 2–5 kHz, centered at 3.16 kHz */
     biquad_coef_t hf_band_b; /* 5–10 kHz, centered at 7.07 kHz */
     biquad_coef_t hf_air_hpf; /* Keep generated 2nd harmonic in the 4–10 kHz band. */
@@ -1019,7 +1019,7 @@ static void rebuild_character_filters(void)
     calc_butterworth_hpf_q(DSP_SAMPLE_RATE_HZ, 15.0f,
                            0.70710678118f, &next.residual_hpf);
 
-    /* Transient-only refinement: no static treble shelf and no harmonic generator. */
+    /* HF refinement: transient A/B plus a separate gated H2 Air path; no static treble shelf. */
     calc_bandpass(DSP_SAMPLE_RATE_HZ, 3162.2777f, 1.054f, &next.hf_band_a);
     calc_bandpass(DSP_SAMPLE_RATE_HZ, 7071.0678f, 1.414f, &next.hf_band_b);
     calc_butterworth_hpf_q(DSP_SAMPLE_RATE_HZ, 3500.0f,
