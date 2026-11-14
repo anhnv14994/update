@@ -1714,7 +1714,7 @@ async function updateCharacter(){
 characterControls.concat(characterModifierControls).forEach(([inputId, key, valueId]) => {
   const slider = document.getElementById(inputId);
   slider.addEventListener("input", e => {
-  document.getElementById("dynamicBassMaxDbVal").textContent = e.target.value + " dB";
+    document.getElementById(valueId).textContent = String(Math.round(Number(e.target.value))) + "%";
     scheduleCharacterUpdate();
   });
   slider.addEventListener("change", () => {
@@ -1792,7 +1792,7 @@ document.getElementById("dynamicLoudnessEnabled").addEventListener("change", asy
 });
 
 document.getElementById("dynamicBassMaxDb").addEventListener("input", e => {
-  document.getElementById("dynamicBassMaxDbVal").textContent = \`\${e.target.value} dB\`;
+  document.getElementById("dynamicBassMaxDbVal").textContent = e.target.value + " dB";
 });
 
 document.getElementById("dynamicBassMaxDb").addEventListener("change", async e => {
