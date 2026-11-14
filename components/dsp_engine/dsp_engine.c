@@ -2470,7 +2470,7 @@ esp_err_t dsp_engine_set_character(const dsp_character_t *config)
         return ESP_ERR_INVALID_ARG;
 
     dsp_character_t next = *config;
-    /* V5 ignores these legacy V4 controls; retain the NVS struct layout. */
+    /* Retain the reserved V4 layout fields; V6.9 repurposes air_pct below. */
     next.softness_pct = 0.0f;
     /* air_pct is the backward-compatible storage slot for HF H2 amount. */
     next.memory_pct = 0.0f;
