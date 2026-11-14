@@ -346,7 +346,7 @@ static esp_err_t apply_v3_preset_options(
              (int)id, old->version);
     err = save_preset_options(id);
     if (err != ESP_OK)
-        ESP_LOGW(TAG, "Preset %d V4 migration save failed: %s",
+        ESP_LOGW(TAG, "Preset %d V5 migration save failed: %s",
                  (int)id, esp_err_to_name(err));
     return ESP_OK;
 }
