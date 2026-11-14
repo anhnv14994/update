@@ -257,7 +257,7 @@ typedef struct {
 
 
 static character_filter_coef_t s_character_filters;
-static character_state_t s_character_state;
+static character_state_t s_character_state = { .sag_gain = 1.0f };
 static biquad_state_t s_character_residual_hpf[2];
 
 /* Audio-task-owned state; no allocation, locks, or NVS writes in the PCM path. */
