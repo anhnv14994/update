@@ -3379,6 +3379,9 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
                     memset(cs->stage, 0, sizeof(cs->stage));
                     memset(s_character_residual_hpf, 0,
                            sizeof(s_character_residual_hpf));
+                    /* Clear the sag envelope so a later re-enable starts at unity. */
+                    cs->sag_envelope = 0.0f;
+                    cs->sag_gain = 1.0f;
                     s_character_active_stage_mask = 0;
                 }
             }
