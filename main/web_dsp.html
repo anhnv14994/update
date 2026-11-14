@@ -1844,7 +1844,7 @@ document.getElementById("dynamicCalibrateBtn").addEventListener("click", async (
     setStatus("Đã hiệu chuẩn Dynamic Loudness tại " + spl + " dB SPL");
   } catch (err) {
     console.error(err);
-    setStatus("Không thể hiệu chuẩn: kiểm tra AirPlay volume và preset");
+    setStatus("Không thể hiệu chuẩn: cần DSP ON, Character/Dynamic Loudness OFF và AirPlay có âm lượng");
     await refresh();
   }
 });
