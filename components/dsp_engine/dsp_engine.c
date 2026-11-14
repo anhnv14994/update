@@ -3239,7 +3239,11 @@ static const uint8_t * IRAM_ATTR dsp_engine_process_internal(
                     (linked_input_peak - cs->sag_envelope);
                 const float sag_depth_db = 0.30f * clampf_local(
                     (cs->sag_envelope - 0.40f) * (1.0f / 0.55f), 0.0f, 1.0f);
-                const float sag_target_gain = db_to_linear(-sag_depth_db);
+                /* Second-order exp approximation over a maximum 0.3 dB range;
+                 * avoids powf() in the per-sample real-time loop. */
+                const float sag_x = 0.11512925f * sag_depth_db;
+                const float sag_target_gain =
+                    1.0f - sag_x + 0.5f * sag_x * sag_x;
                 const float sag_gain_alpha =
                     (sag_target_gain < cs->sag_gain)
                     ? character_filters.sag_attack_alpha
