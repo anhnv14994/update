@@ -108,10 +108,15 @@ typedef struct {
     uint32_t dynamic_reference_gain_q; /* effective AirPlay x preset-master gain, x1e6 */
 } dsp_preset_options_blob_t;
 
-_Static_assert(sizeof(dsp_preset_options_v5_blob_t) != sizeof(dsp_preset_options_v3_blob_t),
-               "V5 preset options must be distinct from V3/V4");
-_Static_assert(sizeof(dsp_preset_options_blob_t) != sizeof(dsp_preset_options_v5_blob_t),
-               "V6 preset options must be distinct from V5");
+_Static_assert(sizeof(dsp_preset_options_v5_blob_t) != sizeof(dsp_preset_options_v1_blob_t) &&
+               sizeof(dsp_preset_options_v5_blob_t) != sizeof(dsp_preset_options_v2_blob_t) &&
+               sizeof(dsp_preset_options_v5_blob_t) != sizeof(dsp_preset_options_v3_blob_t),
+               "V5 preset options must be distinct from all legacy layouts");
+_Static_assert(sizeof(dsp_preset_options_blob_t) != sizeof(dsp_preset_options_v1_blob_t) &&
+               sizeof(dsp_preset_options_blob_t) != sizeof(dsp_preset_options_v2_blob_t) &&
+               sizeof(dsp_preset_options_blob_t) != sizeof(dsp_preset_options_v3_blob_t) &&
+               sizeof(dsp_preset_options_blob_t) != sizeof(dsp_preset_options_v5_blob_t),
+               "V6 preset options must be distinct from all previous layouts");
 
 /* V1 used one shared Character record. Retain it as a one-time migration base. */
 static dsp_character_t s_legacy_character;
