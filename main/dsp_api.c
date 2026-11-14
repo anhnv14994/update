@@ -377,7 +377,7 @@ static esp_err_t apply_v3_preset_options(
             return err;
     }
 
-    ESP_LOGW(TAG, "Preset %d V%u -> V5 options migration",
+    ESP_LOGW(TAG, "Preset %d V%u -> V6 options migration",
              (int)id, old->version);
     err = save_preset_options(id);
     if (err != ESP_OK)
