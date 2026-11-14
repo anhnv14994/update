@@ -105,7 +105,7 @@ typedef struct {
     float detail_pct;   /* 0..100: normalized H3/detail amount */
     float drive_pct;    /* 0..100: overall harmonic mix multiplier */
     float softness_pct; /* Reserved V4 field; ignored by V5 Lite. */
-    float air_pct;      /* Reserved V4 field; ignored by V5 Lite. */
+    float air_pct;      /* V6.9: optional HF H2 amount, 0..100%; reuses reserved V4 storage. */
     float memory_pct;   /* Reserved V4 field; ignored by V5 Lite. */
     float spectral_pct; /* Reserved V4 field; ignored by V5 Lite. */
 
