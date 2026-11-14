@@ -8,6 +8,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <math.h>
 
 extern stereo_spatial_ctx_t *g_stereo_ctx;
 void stereo_spatial_get_config(const stereo_spatial_ctx_t *ctx, stereo_spatial_config_t *cfg);
@@ -15,7 +16,7 @@ void stereo_spatial_get_config(const stereo_spatial_ctx_t *ctx, stereo_spatial_c
 static const char *TAG = "dsp_api";
 
 #define DSP_OPTIONS_MAGIC   0x4453504FU /* "DSPO" */
-#define DSP_OPTIONS_VERSION 5U
+#define DSP_OPTIONS_VERSION 6U
 #define DSP_OPTIONS_NS      "dsp_opts"
 
 /* Exact V1 layout kept for in-place migration of existing NVS records. */
@@ -67,6 +68,7 @@ typedef struct {
     dsp_character_t character;
 } dsp_preset_options_v3_blob_t;
 
+/* Exact V5 layout for migration from the previous adaptive-bass firmware. */
 typedef struct {
     uint32_t magic;
     uint16_t version;
@@ -82,11 +84,34 @@ typedef struct {
     uint8_t character_stage_mask;
     uint8_t character_feature_mask;
     dsp_character_t character;
-    uint8_t dynamic_bass_max_db; /* 0..5 dB, appended to preserve V4 layout */
+    uint8_t dynamic_bass_max_db;
+} dsp_preset_options_v5_blob_t;
+
+/* V6 adds a per-preset 1 kHz SPL calibration point and its effective gain. */
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint8_t dsp_enabled;
+    uint8_t hf_a_enabled;
+    uint8_t hf_b_enabled;
+    uint8_t hf_a_strength_pct;
+    uint8_t hf_b_strength_pct;
+    uint8_t dynamic_loudness_enabled;
+    uint8_t spatial_mode;
+    uint8_t enable_width_eq;
+    uint8_t enable_decorrelator;
+    uint8_t character_stage_mask;
+    uint8_t character_feature_mask;
+    dsp_character_t character;
+    uint8_t dynamic_bass_max_db;
+    uint8_t dynamic_reference_spl_db; /* 0 = estimated fallback, otherwise 35..90 dB SPL */
+    uint32_t dynamic_reference_gain_q; /* effective AirPlay x preset-master gain, x1e6 */
 } dsp_preset_options_blob_t;
 
-_Static_assert(sizeof(dsp_preset_options_blob_t) != sizeof(dsp_preset_options_v3_blob_t),
-               "V5 preset options must have a distinct size from V3/V4");
+_Static_assert(sizeof(dsp_preset_options_v5_blob_t) != sizeof(dsp_preset_options_v3_blob_t),
+               "V5 preset options must be distinct from V3/V4");
+_Static_assert(sizeof(dsp_preset_options_blob_t) != sizeof(dsp_preset_options_v5_blob_t),
+               "V6 preset options must be distinct from V5");
 
 /* V1 used one shared Character record. Retain it as a one-time migration base. */
 static dsp_character_t s_legacy_character;
@@ -120,6 +145,7 @@ static void apply_default_preset_options(void)
     (void)dsp_engine_set_character_hf(false, false, 0U, 0U);
     (void)dsp_engine_set_dynamic_loudness(false);
     (void)dsp_engine_set_dynamic_bass_max_db(4U);
+    (void)dsp_engine_set_dynamic_loudness_calibration(0U, 0.5f);
     (void)dsp_engine_set_character_diagnostics(
         DSP_CHARACTER_STAGE_MASK_ALL, DSP_CHARACTER_FEATURE_MASK_ALL);
 
@@ -172,6 +198,9 @@ static esp_err_t apply_legacy_preset_options(
         return err;
 
     err = dsp_engine_set_dynamic_bass_max_db(4U);
+    if (err != ESP_OK)
+        return err;
+    err = dsp_engine_set_dynamic_loudness_calibration(0U, 0.5f);
     if (err != ESP_OK)
         return err;
 
@@ -241,6 +270,9 @@ static esp_err_t apply_v2_preset_options(
         return err;
 
     err = dsp_engine_set_dynamic_bass_max_db(4U);
+    if (err != ESP_OK)
+        return err;
+    err = dsp_engine_set_dynamic_loudness_calibration(0U, 0.5f);
     if (err != ESP_OK)
         return err;
 
@@ -317,6 +349,9 @@ static esp_err_t apply_v3_preset_options(
     err = dsp_engine_set_dynamic_bass_max_db(4U);
     if (err != ESP_OK)
         return err;
+    err = dsp_engine_set_dynamic_loudness_calibration(0U, 0.5f);
+    if (err != ESP_OK)
+        return err;
 
     /* V3 had no active A/B mask; V4 already persisted both masks. */
     const uint8_t stage_mask = (old->version == 3U)
@@ -347,6 +382,90 @@ static esp_err_t apply_v3_preset_options(
     err = save_preset_options(id);
     if (err != ESP_OK)
         ESP_LOGW(TAG, "Preset %d V5 migration save failed: %s",
+                 (int)id, esp_err_to_name(err));
+    return ESP_OK;
+}
+
+
+static bool preset_options_v5_valid(const dsp_preset_options_v5_blob_t *blob)
+{
+    return blob &&
+        blob->magic == DSP_OPTIONS_MAGIC &&
+        blob->version == 5U &&
+        blob->dsp_enabled <= 1U &&
+        blob->hf_a_enabled <= 1U &&
+        blob->hf_b_enabled <= 1U &&
+        blob->hf_a_strength_pct <= 100U &&
+        blob->hf_b_strength_pct <= 100U &&
+        blob->dynamic_loudness_enabled <= 1U &&
+        blob->dynamic_bass_max_db <= 5U &&
+        blob->spatial_mode <= STEREO_SPATIAL_MODE_WIDE &&
+        blob->enable_width_eq <= 1U &&
+        blob->enable_decorrelator <= 1U &&
+        (blob->character_stage_mask & (uint8_t)~DSP_CHARACTER_STAGE_MASK_ALL) == 0U &&
+        (blob->character_feature_mask & (uint8_t)~DSP_CHARACTER_FEATURE_MASK_ALL) == 0U;
+}
+
+static esp_err_t apply_v5_preset_options(
+    dsp_preset_id_t id,
+    const dsp_preset_options_v5_blob_t *old)
+{
+    if (!preset_options_v5_valid(old)) {
+        ESP_LOGW(TAG, "Preset %d V5 options invalid; using defaults", (int)id);
+        apply_default_preset_options();
+        return ESP_OK;
+    }
+
+    esp_err_t err = dsp_engine_set_character(&old->character);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Preset %d V5 Character invalid; using defaults", (int)id);
+        apply_default_preset_options();
+        return ESP_OK;
+    }
+
+    err = dsp_engine_set_character_hf(
+        old->hf_a_enabled != 0U, old->hf_b_enabled != 0U,
+        old->hf_a_strength_pct, old->hf_b_strength_pct);
+    if (err != ESP_OK)
+        return err;
+
+    err = dsp_engine_set_dynamic_loudness(old->dynamic_loudness_enabled != 0U);
+    if (err != ESP_OK)
+        return err;
+    err = dsp_engine_set_dynamic_bass_max_db(old->dynamic_bass_max_db);
+    if (err != ESP_OK)
+        return err;
+
+    /* V5 had no SPL calibration; retain its adaptive shape with an estimated 60-phon anchor. */
+    err = dsp_engine_set_dynamic_loudness_calibration(0U, 0.5f);
+    if (err != ESP_OK)
+        return err;
+
+    err = dsp_engine_set_character_diagnostics(
+        old->character_stage_mask, old->character_feature_mask);
+    if (err != ESP_OK)
+        return err;
+
+    if (g_stereo_ctx) {
+        const stereo_spatial_config_t cfg = {
+            .mode = (stereo_spatial_mode_t)old->spatial_mode,
+            .enable_width_eq = old->enable_width_eq != 0U,
+            .enable_decorrelator = old->enable_decorrelator != 0U
+        };
+        stereo_spatial_set_config(g_stereo_ctx, &cfg);
+    }
+
+    if (dsp_engine_get_enabled() != (old->dsp_enabled != 0U)) {
+        err = dsp_engine_set_enabled(old->dsp_enabled != 0U);
+        if (err != ESP_OK)
+            return err;
+    }
+
+    ESP_LOGW(TAG, "Preset %d V5 -> V6 migration: SPL calibration not yet set",
+             (int)id);
+    err = save_preset_options(id);
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "Preset %d V6 migration save failed: %s",
                  (int)id, esp_err_to_name(err));
     return ESP_OK;
 }
@@ -425,6 +544,18 @@ static esp_err_t apply_preset_options(dsp_preset_id_t id)
         return ESP_OK;
     }
 
+    if (len == sizeof(dsp_preset_options_v5_blob_t)) {
+        dsp_preset_options_v5_blob_t old;
+        size_t read_len = sizeof(old);
+        err = nvs_get_blob(nvs, key, &old, &read_len);
+        nvs_close(nvs);
+        if (err != ESP_OK || read_len != sizeof(old)) {
+            apply_default_preset_options();
+            return ESP_OK;
+        }
+        return apply_v5_preset_options(id, &old);
+    }
+
     if (len != sizeof(dsp_preset_options_blob_t)) {
         nvs_close(nvs);
         ESP_LOGW(TAG, "Preset %d options size unsupported; using defaults", (int)id);
@@ -453,6 +584,10 @@ static esp_err_t apply_preset_options(dsp_preset_id_t id)
         blob.hf_a_strength_pct > 100U || blob.hf_b_strength_pct > 100U ||
         blob.dynamic_loudness_enabled > 1U ||
         blob.dynamic_bass_max_db > 5U ||
+        (blob.dynamic_reference_spl_db != 0U &&
+         (blob.dynamic_reference_spl_db < 35U || blob.dynamic_reference_spl_db > 90U)) ||
+        blob.dynamic_reference_gain_q < 1000U ||
+        blob.dynamic_reference_gain_q > 2000000U ||
         blob.spatial_mode > STEREO_SPATIAL_MODE_WIDE ||
         blob.enable_width_eq > 1U || blob.enable_decorrelator > 1U ||
         (blob.character_stage_mask & (uint8_t)~DSP_CHARACTER_STAGE_MASK_ALL) != 0U ||
@@ -488,6 +623,12 @@ static esp_err_t apply_preset_options(dsp_preset_id_t id)
         return err;
 
     err = dsp_engine_set_dynamic_bass_max_db(blob.dynamic_bass_max_db);
+    if (err != ESP_OK)
+        return err;
+
+    err = dsp_engine_set_dynamic_loudness_calibration(
+        blob.dynamic_reference_spl_db,
+        (float)blob.dynamic_reference_gain_q * 0.000001f);
     if (err != ESP_OK)
         return err;
 
@@ -549,6 +690,13 @@ static esp_err_t save_preset_options(dsp_preset_id_t id)
     blob.dynamic_loudness_enabled =
         dsp_engine_get_dynamic_loudness() ? 1U : 0U;
     blob.dynamic_bass_max_db = dsp_engine_get_dynamic_bass_max_db();
+    float dynamic_reference_gain = 0.5f;
+    uint8_t dynamic_reference_spl = 0U;
+    dsp_engine_get_dynamic_loudness_calibration(
+        &dynamic_reference_spl, &dynamic_reference_gain);
+    blob.dynamic_reference_spl_db = dynamic_reference_spl;
+    blob.dynamic_reference_gain_q =
+        (uint32_t)(dynamic_reference_gain * 1000000.0f + 0.5f);
 
     err = dsp_engine_get_character_diagnostic_masks(
         &blob.character_stage_mask, &blob.character_feature_mask);
@@ -598,6 +746,8 @@ static esp_err_t reset_preset_options(dsp_preset_id_t id)
     blob.dsp_enabled = 1U;
     blob.character.mode = DSP_CHARACTER_CUSTOM;
     blob.dynamic_bass_max_db = 4U;
+    blob.dynamic_reference_spl_db = 0U;
+    blob.dynamic_reference_gain_q = 500000U;
     blob.character_stage_mask = DSP_CHARACTER_STAGE_MASK_ALL;
     blob.character_feature_mask = DSP_CHARACTER_FEATURE_MASK_ALL;
 
@@ -800,6 +950,14 @@ static cJSON *build_state_json(void)
                           dsp_engine_get_dynamic_loudness());
     cJSON_AddNumberToObject(root, "dynamic_bass_max_db",
                             dsp_engine_get_dynamic_bass_max_db());
+    uint8_t dynamic_reference_spl = 0U;
+    float dynamic_reference_gain = 0.5f;
+    dsp_engine_get_dynamic_loudness_calibration(
+        &dynamic_reference_spl, &dynamic_reference_gain);
+    cJSON_AddBoolToObject(root, "dynamic_calibrated",
+                          dynamic_reference_spl >= 35U && dynamic_reference_spl <= 90U);
+    cJSON_AddNumberToObject(root, "dynamic_reference_spl_db",
+                            dynamic_reference_spl);
 
 
     // ---------------------------------------------------------
@@ -865,6 +1023,7 @@ static cJSON *build_state_json(void)
         cJSON_AddNumberToObject(ch, "drive_pct", character.drive_pct);
         cJSON_AddNumberToObject(ch, "softness_pct", character.softness_pct);
         cJSON_AddNumberToObject(ch, "air_pct", character.air_pct);
+        cJSON_AddNumberToObject(ch, "hf_air_pct", character.air_pct);
         cJSON_AddNumberToObject(ch, "memory_pct", character.memory_pct);
         cJSON_AddNumberToObject(ch, "spectral_pct", character.spectral_pct);
         cJSON_AddBoolToObject(ch, "harmonic_interaction_enabled",
@@ -1238,33 +1397,36 @@ static esp_err_t api_character_diag_handler(httpd_req_t *req)
 
 static esp_err_t api_loudness_handler(httpd_req_t *req)
 {
-    char buf[128];
+    char buf[192];
     cJSON *body = parse_request_json(req, buf, sizeof(buf));
     if (!body)
         return send_error_json(req, 400, "invalid or empty json");
 
     cJSON *enabled = cJSON_GetObjectItem(body, "enabled");
     cJSON *bass_max = cJSON_GetObjectItem(body, "bass_max_db");
-    if ((!enabled || !cJSON_IsBool(enabled)) &&
-        (!bass_max || !cJSON_IsNumber(bass_max))) {
+    cJSON *calibrate = cJSON_GetObjectItem(body, "calibrate");
+    cJSON *reference_spl = cJSON_GetObjectItem(body, "reference_spl_db");
+
+    if ((enabled && !cJSON_IsBool(enabled)) ||
+        (bass_max && (!cJSON_IsNumber(bass_max) ||
+         bass_max->valuedouble < 0.0 || bass_max->valuedouble > 5.0 ||
+         (double)bass_max->valueint != bass_max->valuedouble)) ||
+        (calibrate && !cJSON_IsBool(calibrate)) ||
+        (reference_spl && (!cJSON_IsNumber(reference_spl) ||
+         reference_spl->valuedouble < 35.0 || reference_spl->valuedouble > 90.0 ||
+         (double)reference_spl->valueint != reference_spl->valuedouble))) {
         cJSON_Delete(body);
-        return send_error_json(req, 400, "expected 'enabled' and/or numeric 'bass_max_db'");
-    }
-    if (enabled && !cJSON_IsBool(enabled)) {
-        cJSON_Delete(body);
-        return send_error_json(req, 400, "'enabled' must be boolean");
-    }
-    if (bass_max && (!cJSON_IsNumber(bass_max) ||
-        bass_max->valuedouble < 0.0 || bass_max->valuedouble > 5.0 ||
-        (double)bass_max->valueint != bass_max->valuedouble)) {
-        cJSON_Delete(body);
-        return send_error_json(req, 400, "'bass_max_db' must be an integer from 0 to 5");
+        return send_error_json(req, 400, "invalid loudness setting or SPL calibration value");
     }
 
     const bool has_enabled = enabled != NULL;
     const bool enabled_value = has_enabled && cJSON_IsTrue(enabled);
     const bool has_bass_max = bass_max != NULL;
     const uint8_t bass_max_value = has_bass_max ? (uint8_t)bass_max->valueint : 0U;
+    const bool calibrate_now = cJSON_IsTrue(calibrate);
+    const bool has_reference_spl = reference_spl != NULL;
+    const uint8_t reference_spl_value =
+        has_reference_spl ? (uint8_t)reference_spl->valueint : 0U;
     cJSON_Delete(body);
 
     begin_audio_config_transition();
@@ -1273,10 +1435,28 @@ static esp_err_t api_loudness_handler(httpd_req_t *req)
         err = dsp_engine_set_dynamic_loudness(enabled_value);
     if (err == ESP_OK && has_bass_max)
         err = dsp_engine_set_dynamic_bass_max_db(bass_max_value);
+
+    if (err == ESP_OK && calibrate_now) {
+        if (!has_reference_spl) {
+            err = ESP_ERR_INVALID_ARG;
+        } else {
+            dsp_preset_t preset;
+            err = dsp_engine_get_preset(
+                dsp_engine_get_active_preset(), &preset);
+            if (err == ESP_OK) {
+                const float master_gain = powf(10.0f, preset.master_gain_db / 20.0f);
+                const float calibration_gain =
+                    dsp_engine_get_output_volume() * master_gain;
+                err = dsp_engine_set_dynamic_loudness_calibration(
+                    reference_spl_value, calibration_gain);
+            }
+        }
+    }
     end_audio_config_transition();
 
     if (err != ESP_OK)
-        return send_error_json(req, 500, "cannot update Dynamic Loudness settings");
+        return send_error_json(req, 400,
+            "cannot update loudness settings; calibration requires nonzero AirPlay volume");
 
     return send_state(req);
 }
@@ -1333,6 +1513,8 @@ static esp_err_t api_character_handler(httpd_req_t *req)
     if (v && cJSON_IsNumber(v)) current.detail_pct = (float)v->valuedouble;
     v = cJSON_GetObjectItem(body, "drive_pct");
     if (v && cJSON_IsNumber(v)) current.drive_pct = (float)v->valuedouble;
+    v = cJSON_GetObjectItem(body, "hf_air_pct");
+    if (v && cJSON_IsNumber(v)) current.air_pct = (float)v->valuedouble;
 
     v = cJSON_GetObjectItem(body, "harmonic_interaction_enabled");
     if (v && cJSON_IsBool(v))
